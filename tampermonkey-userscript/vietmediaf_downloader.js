@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         VietMediaF Downloader
-// @namespace    https://gist.github.com/bioidaika/86835e0ca88be467d3ebbc9ed83302fb
-// @version      1.0.0
-// @updateURL    https://gist.githubusercontent.com/bioidaika/86835e0ca88be467d3ebbc9ed83302fb/raw/vietmediaf_downloader.js
-// @downloadURL  https://gist.githubusercontent.com/bioidaika/86835e0ca88be467d3ebbc9ed83302fb/raw/vietmediaf_downloader.js
+// @namespace    https://github.com/bioidaika/bioidaika_gist
+// @version      1.0.1
+// @updateURL    https://raw.githubusercontent.com/bioidaika/bioidaika_gist/main/tampermonkey-userscript/vietmediaf_downloader.js
+// @downloadURL  https://raw.githubusercontent.com/bioidaika/bioidaika_gist/main/tampermonkey-userscript/vietmediaf_downloader.js
 // @description  Hiển thị link tải VietMediaF + Radarr/Sonarr integration cho các tracker
 // @match        https://www.themoviedb.org/*
 // @match        https://www.imdb.com/title/*
