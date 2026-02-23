@@ -2,8 +2,8 @@
 // @name         Universal Tracker - Smart Quality Download v3.0 (UNIT3D + NexusPHP)
 // @namespace    https://github.com/bioidaika/bioidaika_gist
 // @version      3.0.1
-// @updateURL    https://raw.githubusercontent.com/bioidaika/bioidaika_gist/main/tampermonkey-userscript/batch-download-torrents.js
-// @downloadURL  https://raw.githubusercontent.com/bioidaika/bioidaika_gist/main/tampermonkey-userscript/batch-download-torrents.js
+// @updateURL    https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/batch-download-torrents.user.js
+// @downloadURL  https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/batch-download-torrents.user.js
 // @description  Download BEST QUALITY torrent from each group (UNIT3D + NexusPHP) with infinite auto-retry
 // @match        https://*/torrents*
 // @grant        none

@@ -44,6 +44,6 @@ Cần cài extension [Tampermonkey](https://www.tampermonkey.net/).
 
 | Script | Mô tả / Description | Link |
 |---|---|---|
-| **VietMediaF Downloader** | Hiển thị link tải VMF + Radarr/Sonarr / Show VMF links + Radarr/Sonarr | [Install](https://raw.githubusercontent.com/bioidaika/bioidaika_gist/main/tampermonkey-userscript/vietmediaf_downloader.js) |
-| **Smart Quality Download** | Tải hàng loạt chất lượng cao / Batch best quality download | [Install](https://raw.githubusercontent.com/bioidaika/bioidaika_gist/main/tampermonkey-userscript/batch-download-torrents.js) |
+| **VietMediaF Downloader** | Hiển thị link tải VMF + Radarr/Sonarr / Show VMF links + Radarr/Sonarr | [Install](https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/vietmediaf_downloader.user.js) |
+| **Smart Quality Download** | Tải hàng loạt chất lượng cao / Batch best quality download | [Install](https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/batch-download-torrents.user.js) |
 
