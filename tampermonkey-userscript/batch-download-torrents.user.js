@@ -4,8 +4,9 @@
 // @version      3.0.1
 // @updateURL    https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/batch-download-torrents.user.js
 // @downloadURL  https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/batch-download-torrents.user.js
-// @description  Download BEST QUALITY torrent from each group (UNIT3D + NexusPHP) with infinite auto-retry
+// @description  Download BEST QUALITY torrent from each group (UNIT3D + NexusPHP + Kokocon) with infinite auto-retry
 // @match        https://*/torrents*
+// @match        *://tracker.kokocon.net/index.php*
 // @grant        none
 // ==/UserScript==
 
@@ -204,8 +205,9 @@
         // Detect tracker type
         const isUNIT3D = document.querySelectorAll('table.torrent-search--grouped__torrents').length > 0;
         const isNexusPHP = document.querySelectorAll('table.torrent').length > 0;
+        const isKokocon = location.hostname.includes('kokocon.net');
 
-        console.log(`[Tracker Type] UNIT3D: ${isUNIT3D}, NexusPHP: ${isNexusPHP}`);
+        console.log(`[Tracker Type] UNIT3D: ${isUNIT3D}, NexusPHP: ${isNexusPHP}, Kokocon: ${isKokocon}`);
 
         let bestTorrents = [];
         const qualityCounts = {};
@@ -260,6 +262,28 @@
                             }
                         }
                     }
+
+                    if (downloadLink && nameLink) {
+                        const name = nameLink.textContent.trim();
+                        const label = getLabel(name);
+
+                        bestTorrents.push({
+                            link: downloadLink,
+                            name: name,
+                            score: 0,
+                            label: label
+                        });
+                        qualityCounts[label] = (qualityCounts[label] || 0) + 1;
+                    }
+                });
+            } else if (isKokocon) {
+                // Kokocon - plain table with no CSS classes
+                const rows = document.querySelectorAll('table tr');
+                console.log(`[Found] ${rows.length} rows (Kokocon)`);
+
+                rows.forEach(tr => {
+                    const downloadLink = tr.querySelector('a[href*="download.php"]');
+                    const nameLink = tr.querySelector('a[href*="/torrent/"]');
 
                     if (downloadLink && nameLink) {
                         const name = nameLink.textContent.trim();
@@ -382,6 +406,57 @@
                 console.log(`[Grouped] ${groups.length} unique titles`);
 
                 // Select best from each group
+                groups.forEach((group, idx) => {
+                    let best = null;
+                    let bestScore = -1;
+
+                    console.log(`[Group ${idx + 1}] Processing ${group.length} torrents`);
+
+                    group.forEach(torrent => {
+                        console.log(`  - ${torrent.name.substring(0, 60)}... (Score: ${torrent.score})`);
+
+                        if (torrent.score > bestScore) {
+                            bestScore = torrent.score;
+                            best = torrent;
+                        }
+                    });
+
+                    if (best) {
+                        console.log(`  ✓ Selected: ${best.label} (Score: ${best.score})`);
+                        bestTorrents.push(best);
+                        qualityCounts[best.label] = (qualityCounts[best.label] || 0) + 1;
+                    }
+                });
+
+            } else if (isKokocon) {
+                // Kokocon - plain table, group by title
+                const rows = document.querySelectorAll('table tr');
+                console.log(`[Found] ${rows.length} rows (Kokocon)`);
+
+                const allTorrents = [];
+
+                rows.forEach(tr => {
+                    const downloadLink = tr.querySelector('a[href*="download.php"]');
+                    const nameLink = tr.querySelector('a[href*="/torrent/"]');
+
+                    if (downloadLink && nameLink) {
+                        const name = nameLink.textContent.trim();
+                        const score = getQualityScore(name);
+
+                        allTorrents.push({
+                            link: downloadLink,
+                            name: name,
+                            score: score,
+                            label: getLabel(name)
+                        });
+                    }
+                });
+
+                console.log(`[Collected] ${allTorrents.length} torrents (Kokocon)`);
+
+                const groups = groupTorrentsByTitle(allTorrents);
+                console.log(`[Grouped] ${groups.length} unique titles`);
+
                 groups.forEach((group, idx) => {
                     let best = null;
                     let bestScore = -1;

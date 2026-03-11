@@ -253,8 +253,9 @@
 
     const SITE_TYPE = detectSiteType();
     let lastUrl = location.href;
-    let isMinimized = localStorage.getItem('vmf-minimized') === 'true';
+    let isDocked = localStorage.getItem('vmf-docked') === 'true';
     let boxPosition = JSON.parse(localStorage.getItem('vmf-position') || 'null');
+    let preDockPosition = JSON.parse(localStorage.getItem('vmf-predock-position') || 'null');
     let currentIds = { imdbId: null, tvdbId: null }; // Track current IDs for Arr integration
 
     // ========== INITIALIZATION ==========
@@ -702,13 +703,17 @@
         box.id = 'vmf-download-box';
         box.className = `vmf-box vmf-box--${SITE_TYPE}`;
 
-        if (boxPosition) {
-            box.style.left = `${boxPosition.x}px`;
-            box.style.top = `${boxPosition.y}px`;
-        }
-
-        if (isMinimized) {
-            box.classList.add('vmf-minimized');
+        if (isDocked) {
+            // Docked: position at bottom-left corner
+            box.classList.add('vmf-docked');
+            box.style.left = '20px';
+            box.style.top = 'auto';
+            box.style.bottom = '20px';
+        } else {
+            if (boxPosition) {
+                box.style.left = `${boxPosition.x}px`;
+                box.style.top = `${boxPosition.y}px`;
+            }
         }
 
         box.innerHTML = `
@@ -719,8 +724,7 @@
                 </div>
                 <div class="vmf-controls">
                     <span class="vmf-settings-btn" title="Settings">⚙️</span>
-                    <span class="vmf-minimize-btn" title="${isMinimized ? 'Maximize' : 'Minimize'}">${isMinimized ? '□' : '_'}</span>
-                    <span class="vmf-close-btn" title="Close">×</span>
+                    <span class="vmf-dock-btn" title="${isDocked ? 'Restore' : 'Thu nhỏ xuống góc'}">${isDocked ? '⬆️' : '📌'}</span>
                 </div>
             </div>
             <div class="vmf-content-wrapper">
@@ -730,8 +734,7 @@
         `;
 
         // Event handlers
-        box.querySelector('.vmf-close-btn').onclick = () => box.remove();
-        box.querySelector('.vmf-minimize-btn').onclick = () => toggleMinimize(box);
+        box.querySelector('.vmf-dock-btn').onclick = () => toggleDock(box);
         box.querySelector('.vmf-settings-btn').onclick = () => renderSettingsModal();
         makeDraggable(box, box.querySelector('#vmf-drag-handle'));
 
@@ -809,17 +812,49 @@
     }
 
     /**
-     * Toggle minimize/maximize state
+     * Toggle dock/undock state — docks to bottom-left corner (7h direction)
      * @param {HTMLElement} box - The download box element
      */
-    function toggleMinimize(box) {
-        isMinimized = !isMinimized;
-        localStorage.setItem('vmf-minimized', isMinimized);
-        box.classList.toggle('vmf-minimized');
+    function toggleDock(box) {
+        isDocked = !isDocked;
+        localStorage.setItem('vmf-docked', isDocked);
 
-        const btn = box.querySelector('.vmf-minimize-btn');
-        btn.textContent = isMinimized ? '□' : '_';
-        btn.title = isMinimized ? 'Maximize' : 'Minimize';
+        if (isDocked) {
+            // Save current position before docking
+            preDockPosition = boxPosition || {
+                x: parseInt(box.style.left) || box.offsetLeft,
+                y: parseInt(box.style.top) || box.offsetTop
+            };
+            localStorage.setItem('vmf-predock-position', JSON.stringify(preDockPosition));
+
+            // Move to bottom-left corner
+            box.classList.add('vmf-docked');
+
+            // Position at bottom-left
+            box.style.left = '20px';
+            box.style.top = 'auto';
+            box.style.bottom = '20px';
+        } else {
+            // Restore previous position
+            box.classList.remove('vmf-docked');
+            box.style.bottom = '';
+
+            if (preDockPosition) {
+                box.style.left = `${preDockPosition.x}px`;
+                box.style.top = `${preDockPosition.y}px`;
+                boxPosition = preDockPosition;
+            } else {
+                box.style.left = '20px';
+                box.style.top = '85px';
+                boxPosition = { x: 20, y: 85 };
+            }
+            localStorage.setItem('vmf-position', JSON.stringify(boxPosition));
+        }
+
+        // Update dock button
+        const dockBtn = box.querySelector('.vmf-dock-btn');
+        dockBtn.textContent = isDocked ? '⬆️' : '📌';
+        dockBtn.title = isDocked ? 'Restore' : 'Thu nhỏ xuống góc';
     }
 
     /**
@@ -1201,7 +1236,46 @@
                 z-index: 999999;
                 font-family: system-ui, -apple-system, sans-serif;
                 color: var(--vmf-text);
-                transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+                transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+            }
+
+            /* Docked state — compact pill at bottom-left */
+            #vmf-download-box.vmf-docked {
+                top: auto !important;
+                bottom: 20px !important;
+                left: 20px !important;
+                width: auto;
+                min-width: 0;
+                max-width: 180px;
+                border-radius: 50px;
+                box-shadow: 0 4px 20px rgba(0, 196, 255, 0.25), var(--vmf-shadow);
+            }
+
+            #vmf-download-box.vmf-docked .vmf-content-wrapper {
+                max-height: 0;
+                overflow: hidden;
+            }
+
+            #vmf-download-box.vmf-docked .vmf-header {
+                border-bottom: none;
+                padding: 8px 14px;
+            }
+
+            #vmf-download-box.vmf-docked .vmf-settings-btn {
+                display: none;
+            }
+
+            #vmf-download-box.vmf-docked .vmf-dock-btn {
+                font-size: 14px;
+            }
+
+            #vmf-download-box.vmf-docked .vmf-title {
+                font-size: 12px;
+            }
+
+            #vmf-download-box.vmf-docked:hover {
+                box-shadow: 0 4px 25px rgba(0, 196, 255, 0.4), var(--vmf-shadow);
+                transform: translateY(-2px);
             }
 
             .vmf-box {
@@ -1246,8 +1320,7 @@
                 align-items: center;
             }
 
-            .vmf-minimize-btn,
-            .vmf-close-btn {
+            .vmf-dock-btn {
                 width: 24px;
                 height: 24px;
                 display: flex;
@@ -1260,8 +1333,7 @@
                 line-height: 1;
             }
 
-            .vmf-minimize-btn:hover,
-            .vmf-close-btn:hover {
+            .vmf-dock-btn:hover {
                 background: var(--vmf-hover);
             }
 
@@ -1272,9 +1344,7 @@
                 transition: max-height 0.3s ease;
             }
 
-            .vmf-minimized .vmf-content-wrapper {
-                max-height: 0;
-            }
+
 
             .vmf-content {
                 padding: 12px;
