@@ -1,0 +1,110 @@
+---
+id: kokocon
+name: Kokocon
+description: "Kokocon (KKC) is a Vietnamese Private Torrent Tracker for Anime / Manga / Music"
+language: vi-VN
+type: private
+encoding: UTF-8
+links:
+  - https://tracker.kokocon.net/
+
+caps:
+  categorymappings:
+    - {id: 13, cat: Books/Comics, desc: "Manga"}
+    - {id: 25, cat: Games/Other, desc: "Visual Novel"}
+    - {id: 32, cat: Books/Other, desc: "Light novel"}
+    - {id: 31, cat: TV/Anime, desc: "New Releases"}
+    - {id: 17, cat: TV/Anime, desc: "Vietsub Anime"}
+    - {id: 30, cat: TV/Anime, desc: "Anime Music Video"}
+    - {id: 21, cat: Audio/Video, desc: "J-Rock Vietsub"}
+    - {id: 38, cat: Audio/Video, desc: "J-Pop Vietsub"}
+    - {id: 22, cat: Audio/Video, desc: "So Nyuh Shi Dae"}
+    - {id: 14, cat: Audio/Video, desc: "Idol 48"}
+    - {id: 15, cat: Audio, desc: "Music - Other"}
+    - {id: 24, cat: TV/Other, desc: "Tokusatsu Vietsub"}
+    - {id: 28, cat: TV/HD, desc: "Japanese Drama"}
+    - {id: 29, cat: Movies/HD, desc: "Japanese Movie"}
+    - {id: 33, cat: Audio/Video, desc: "Vocaloid Live"}
+    - {id: 34, cat: Audio/Video, desc: "Vocaloid Video"}
+    - {id: 35, cat: Audio, desc: "Vocaloid Mp3"}
+    - {id: 39, cat: Audio/Video, desc: "Live"}
+    - {id: 37, cat: Other, desc: "Artbook"}
+    - {id: 40, cat: Audio, desc: "Drama CD"}
+    - {id: 36, cat: Games, desc: "Game"}
+    - {id: 4, cat: Other, desc: "Other"}
+    - {id: 27, cat: Other, desc: "Incomplete"}
+
+  modes:
+    search: [q]
+    tv-search: [q, season, ep]
+    movie-search: [q]
+    music-search: [q]
+
+settings:
+  - name: username
+    type: text
+    label: Username
+  - name: password
+    type: password
+    label: Password
+  - name: freeleech
+    type: checkbox
+    label: Search freeleech only
+    default: false
+
+login:
+  path: index.php?page=login
+  method: post
+  inputs:
+    uid: "{{ .Config.username }}"
+    pwd: "{{ .Config.password }}"
+  error:
+    - selector: td.error
+  test:
+    path: index.php
+    selector: a[href="/logout"]
+
+search:
+  paths:
+    - path: index.php
+      method: get
+      inputs:
+        page: torrents
+        search: "{{ .Keywords }}"
+        category: "{{ if .Categories }}{{ range .Categories }}{{ . }},{{ end }}{{ else }}0{{ end }}"
+        active: 0
+
+  rows:
+    selector: "table.table_torrent.border tr:has(a[href^=\"/torrent/\"])"
+
+  fields:
+    category:
+      selector: td:nth-child(1) a
+      attribute: href
+      filters:
+        - name: querystring
+          args: category
+    title:
+      selector: td:nth-child(2) a
+    details:
+      selector: td:nth-child(2) a
+      attribute: href
+    download:
+      selector: td:nth-child(3) a[href^="/download.php"]
+      attribute: href
+    date:
+      selector: td:nth-child(4)
+      filters:
+        - name: dateparse
+          args: "dd/MM/yyyy"
+    size:
+      selector: td:nth-child(5)
+    seeders:
+      selector: td:nth-child(6) a
+    leechers:
+      selector: td:nth-child(7) a
+    downloadvolumefactor:
+      text: 0
+    uploadvolumefactor:
+      text: 1
+
