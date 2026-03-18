@@ -47,10 +47,7 @@ settings:
   - name: password
     type: password
     label: Password
-  - name: freeleech
-    type: checkbox
-    label: Search freeleech only
-    default: false
+
 
 login:
   path: index.php?page=login
@@ -104,7 +101,7 @@ search:
     leechers:
       selector: td:nth-child(7) a
     downloadvolumefactor:
-      text: 0
+      text: 1
     uploadvolumefactor:
       text: 1
 
