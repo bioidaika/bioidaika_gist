@@ -512,7 +512,7 @@
         const downloadWithRetry = (torrent, index, attempt = 1) => {
             try {
                 console.log(`[${index + 1}/${bestTorrents.length}] Attempt ${attempt}: ${torrent.label}`);
-                torrent.link.click();
+                window.open(torrent.link.href, '_blank');
                 succeeded++;
                 console.log(`  ✓ Success after ${attempt} attempt(s): ${torrent.label}`);
                 checkCompletion();
