@@ -1,12 +1,13 @@
 // ==UserScript==
-// @name         Universal Tracker - Smart Quality Download v3.0 (UNIT3D + NexusPHP)
+// @name         Universal Tracker - Smart Quality Download v3.1 (UNIT3D + NexusPHP + IPTorrents)
 // @namespace    https://github.com/bioidaika/bioidaika_gist
-// @version      3.0.1
+// @version      3.1.0
 // @updateURL    https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/batch-download-torrents.user.js
 // @downloadURL  https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/batch-download-torrents.user.js
-// @description  Download BEST QUALITY torrent from each group (UNIT3D + NexusPHP + Kokocon) with infinite auto-retry
+// @description  Download BEST QUALITY torrent from each group (UNIT3D + NexusPHP + Kokocon + IPTorrents) with infinite auto-retry
 // @match        https://*/torrents*
 // @match        *://tracker.kokocon.net/index.php*
+// @match        *://www.iptorrents.com/t*
 // @grant        none
 // ==/UserScript==
 
@@ -206,8 +207,9 @@
         const isUNIT3D = document.querySelectorAll('table.torrent-search--grouped__torrents').length > 0;
         const isNexusPHP = document.querySelectorAll('table.torrent').length > 0;
         const isKokocon = location.hostname.includes('kokocon.net');
+        const isIPTorrents = location.hostname.includes('iptorrents.com');
 
-        console.log(`[Tracker Type] UNIT3D: ${isUNIT3D}, NexusPHP: ${isNexusPHP}, Kokocon: ${isKokocon}`);
+        console.log(`[Tracker Type] UNIT3D: ${isUNIT3D}, NexusPHP: ${isNexusPHP}, Kokocon: ${isKokocon}, IPTorrents: ${isIPTorrents}`);
 
         let bestTorrents = [];
         const qualityCounts = {};
@@ -287,6 +289,29 @@
 
                     if (downloadLink && nameLink) {
                         const name = nameLink.textContent.trim();
+                        const label = getLabel(name);
+
+                        bestTorrents.push({
+                            link: downloadLink,
+                            name: name,
+                            score: 0,
+                            label: label
+                        });
+                        qualityCounts[label] = (qualityCounts[label] || 0) + 1;
+                    }
+                });
+            } else if (isIPTorrents) {
+                // IPTorrents - table#torrents has the search results, skip top_torrents sections
+                const rows = document.querySelectorAll('table#torrents tr');
+                console.log(`[Found] ${rows.length} rows (IPTorrents)`);
+
+                rows.forEach(tr => {
+                    const downloadLink = tr.querySelector('a[href*="/download.php/"]');
+                    const nameLink = tr.querySelector('a.hv');
+
+                    if (downloadLink && nameLink) {
+                        const name = nameLink.textContent.trim();
+                        if (name.length < 5) return; // Skip short labels
                         const label = getLabel(name);
 
                         bestTorrents.push({
@@ -453,6 +478,58 @@
                 });
 
                 console.log(`[Collected] ${allTorrents.length} torrents (Kokocon)`);
+
+                const groups = groupTorrentsByTitle(allTorrents);
+                console.log(`[Grouped] ${groups.length} unique titles`);
+
+                groups.forEach((group, idx) => {
+                    let best = null;
+                    let bestScore = -1;
+
+                    console.log(`[Group ${idx + 1}] Processing ${group.length} torrents`);
+
+                    group.forEach(torrent => {
+                        console.log(`  - ${torrent.name.substring(0, 60)}... (Score: ${torrent.score})`);
+
+                        if (torrent.score > bestScore) {
+                            bestScore = torrent.score;
+                            best = torrent;
+                        }
+                    });
+
+                    if (best) {
+                        console.log(`  ✓ Selected: ${best.label} (Score: ${best.score})`);
+                        bestTorrents.push(best);
+                        qualityCounts[best.label] = (qualityCounts[best.label] || 0) + 1;
+                    }
+                });
+
+            } else if (isIPTorrents) {
+                // IPTorrents - table#torrents has the search results, skip top_torrents sections
+                const rows = document.querySelectorAll('table#torrents tr');
+                console.log(`[Found] ${rows.length} rows (IPTorrents)`);
+
+                const allTorrents = [];
+
+                rows.forEach(tr => {
+                    const downloadLink = tr.querySelector('a[href*="/download.php/"]');
+                    const nameLink = tr.querySelector('a.hv');
+
+                    if (downloadLink && nameLink) {
+                        const name = nameLink.textContent.trim();
+                        if (name.length < 5) return; // Skip short labels
+                        const score = getQualityScore(name);
+
+                        allTorrents.push({
+                            link: downloadLink,
+                            name: name,
+                            score: score,
+                            label: getLabel(name)
+                        });
+                    }
+                });
+
+                console.log(`[Collected] ${allTorrents.length} torrents (IPTorrents)`);
 
                 const groups = groupTorrentsByTitle(allTorrents);
                 console.log(`[Grouped] ${groups.length} unique titles`);
