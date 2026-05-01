@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VietMediaF Downloader
 // @namespace    https://github.com/bioidaika/bioidaika_gist
-// @version      1.0.2
+// @version      1.0.3
 // @updateURL    https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/vietmediaf_downloader.user.js
 // @downloadURL  https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/vietmediaf_downloader.user.js
 // @description  Hiển thị link tải VietMediaF + Radarr/Sonarr integration cho các tracker
@@ -154,22 +154,22 @@
                 });
             });
 
-            let lastError;
-            for (let attempt = 0; attempt <= CONFIG.RETRY_COUNT; attempt++) {
+            // Arr stack is local — retry indefinitely on timeout/connection errors
+            let attempt = 0;
+            while (true) {
                 try {
                     return await doRequest();
                 } catch (error) {
-                    lastError = error;
-                    // Don't retry auth errors
-                    if (error.message === 'Invalid API Key') throw error;
-                    if (attempt < CONFIG.RETRY_COUNT) {
-                        const delay = CONFIG.RETRY_DELAY * Math.pow(2, attempt);
-                        console.log(`[VietMediaF] ${type} retry in ${delay}ms... (${CONFIG.RETRY_COUNT - attempt} left)`);
-                        await new Promise(resolve => setTimeout(resolve, delay));
-                    }
+                    // Don't retry auth or HTTP errors — only timeout/connection
+                    const isRetryable = error.message === 'Request timeout' || error.message === 'Connection failed';
+                    if (!isRetryable) throw error;
+
+                    attempt++;
+                    const delay = Math.min(CONFIG.RETRY_DELAY * Math.pow(2, attempt - 1), 30000);
+                    console.log(`[VietMediaF] ${type} timeout, retry #${attempt} in ${delay}ms...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
                 }
             }
-            throw lastError;
         },
 
         /**
