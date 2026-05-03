@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VietMediaF Downloader
 // @namespace    https://github.com/bioidaika/bioidaika_gist
-// @version      1.0.3
+// @version      1.0.4
 // @updateURL    https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/vietmediaf_downloader.user.js
 // @downloadURL  https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/vietmediaf_downloader.user.js
 // @description  Hiển thị link tải VietMediaF + Radarr/Sonarr integration cho các tracker
@@ -489,6 +489,17 @@
                 link = document.querySelector('a[href*="themoviedb.org"][title*="Movie Database"]');
             }
 
+            // Generic fallback for any themoviedb link
+            if (!link) {
+                const links = document.querySelectorAll('a[href*="themoviedb.org"]');
+                for (const l of links) {
+                    if (l.href.match(/themoviedb\.org\/(movie|tv)\/(\d+)/)) {
+                        link = l;
+                        break;
+                    }
+                }
+            }
+
             if (!link) return null;
             const m = link.href.match(/themoviedb\.org\/(movie|tv)\/(\d+)/);
             return m ? { type: m[1], tmdbId: m[2] } : null;
@@ -573,10 +584,9 @@
         }
 
         // Generic IMDb extraction - works for any site with IMDb link
-        const imdbLink = document.querySelector('a[href*="imdb.com/title/"]');
-        if (imdbLink) {
-            console.log('[VietMediaF] Found IMDb link:', imdbLink.href);
-            const match = imdbLink.href.match(/imdb\.com\/title\/(tt\d+)/);
+        const imdbLinks = document.querySelectorAll('a[href*="imdb.com/title/"]');
+        for (const link of imdbLinks) {
+            const match = link.href.match(/imdb\.com\/title\/(tt\d+)/);
             if (match) {
                 console.log('[VietMediaF] IMDb ID from link:', match[1]);
                 return match[1];
