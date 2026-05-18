@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VietMediaF Downloader
 // @namespace    https://github.com/bioidaika/bioidaika_gist
-// @version      1.0.4
+// @version      1.0.5
 // @updateURL    https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/vietmediaf_downloader.user.js
 // @downloadURL  https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/vietmediaf_downloader.user.js
 // @description  Hiển thị link tải VietMediaF + Radarr/Sonarr integration cho các tracker
@@ -273,7 +273,7 @@
     let isDocked = localStorage.getItem('vmf-docked') === 'true';
     let boxPosition = JSON.parse(localStorage.getItem('vmf-position') || 'null');
     let preDockPosition = JSON.parse(localStorage.getItem('vmf-predock-position') || 'null');
-    let currentIds = { imdbId: null, tvdbId: null }; // Track current IDs for Arr integration
+    let currentIds = { imdbId: null, tvdbId: null, tmdbId: null }; // Track current IDs for Arr integration
 
     // ========== INITIALIZATION ==========
     injectStyles();
@@ -544,12 +544,13 @@
         if (SITE_TYPE === 'tmdb') {
             // Fetch IDs from TMDB API for TMDB pages
             currentIds = await fetchExternalIdsFromTmdb(tmdbInfo.type, tmdbInfo.tmdbId);
+            currentIds.tmdbId = tmdbInfo.tmdbId;
             console.log('[VietMediaF] Fetched IDs from TMDB:', currentIds);
         } else {
             // Extract IDs directly from page for tracker sites
             const imdbId = extractImdbId();
             const tvdbId = extractTvdbId();
-            currentIds = { imdbId, tvdbId };
+            currentIds = { imdbId, tvdbId, tmdbId: tmdbInfo.tmdbId };
             console.log('[VietMediaF] Set currentIds:', currentIds);
         }
 
@@ -700,7 +701,7 @@
         }
 
         // Set global IMDb ID for Arr integration
-        currentIds = { imdbId, tvdbId: null };
+        currentIds = { imdbId, tvdbId: null, tmdbId: null };
 
         // Show loading state
         renderDownloadBox(null, null, true);
@@ -1093,14 +1094,15 @@
             try {
                 const movie = await ArrService.lookupMovie(currentIds.imdbId);
                 if (movie) {
+                    const tmdbTag = (movie.tmdbId || currentIds.tmdbId) ? `[M${movie.tmdbId || currentIds.tmdbId}]` : '';
                     if (movie.id) {
                         // Already in library
-                        html += `<div class="vmf-arr-item vmf-arr-exists">🎬 <b>${movie.title}</b> ✅ In Radarr</div>`;
+                        html += `<div class="vmf-arr-item vmf-arr-exists">🎬 <b>${movie.title}</b>${tmdbTag} ✅ In Radarr</div>`;
                     } else {
                         // Can be added
                         html += `
                             <div class="vmf-arr-item">
-                                <span>🎬 ${movie.title} (${movie.year})</span>
+                                <span>🎬 ${movie.title} (${movie.year})${tmdbTag}</span>
                                 <button class="vmf-arr-add" data-type="radarr" data-imdb="${currentIds.imdbId}">➕ Add</button>
                             </div>`;
                     }
@@ -1117,14 +1119,15 @@
             try {
                 const series = await ArrService.lookupSeries(currentIds);
                 if (series) {
+                    const tmdbTag = (series.tmdbId || currentIds.tmdbId) ? `[TV${series.tmdbId || currentIds.tmdbId}]` : '';
                     if (series.id) {
-                        html += `<div class="vmf-arr-item vmf-arr-exists">📺 <b>${series.title}</b> ✅ In Sonarr</div>`;
+                        html += `<div class="vmf-arr-item vmf-arr-exists">📺 <b>${series.title}</b>${tmdbTag} ✅ In Sonarr</div>`;
                     } else {
                         const tvdbAttr = currentIds.tvdbId ? `data-tvdb="${currentIds.tvdbId}"` : '';
                         const imdbAttr = currentIds.imdbId ? `data-imdb="${currentIds.imdbId}"` : '';
                         html += `
                             <div class="vmf-arr-item">
-                                <span>📺 ${series.title} (${series.year})</span>
+                                <span>📺 ${series.title} (${series.year})${tmdbTag}</span>
                                 <button class="vmf-arr-add" data-type="sonarr" ${tvdbAttr} ${imdbAttr}>➕ Add</button>
                             </div>`;
                     }
