@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Fshare Folder API Extractor",
+  "version": "1.0",
+  "description": "Lấy danh sách file trong thư mục Fshare thông qua API nội bộ để hiển thị bảng và copy nhanh.",
+  "author": "Antigravity",
+  "permissions": [
+    "clipboardWrite"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["*://www.fshare.vn/folder/*"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "action": {
+    "default_title": "Fshare API Extractor chạy tự động trên trang fshare.vn/folder/*"
+  }
+}
