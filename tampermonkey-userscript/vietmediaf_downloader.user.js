@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VietMediaF Downloader
 // @namespace    https://github.com/bioidaika/bioidaika_gist
-// @version      1.0.8
+// @version      1.0.9
 // @updateURL    https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/vietmediaf_downloader.user.js
 // @downloadURL  https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/vietmediaf_downloader.user.js
 // @description  Hiển thị link tải VietMediaF + Radarr/Sonarr integration cho các tracker
@@ -183,6 +183,8 @@
                     term = `imdb:${ids.imdbId}`;
                 } else if (ids.tmdbId) {
                     term = `tmdb:${ids.tmdbId}`;
+                } else if (ids.title) {
+                    term = encodeURIComponent(ids.title);
                 } else {
                     return null;
                 }
@@ -191,7 +193,15 @@
             } else {
                 return null;
             }
-            const results = await this.apiRequest('radarr', `/movie/lookup?term=${term}`);
+            
+            let results = await this.apiRequest('radarr', `/movie/lookup?term=${term}`);
+            
+            // Fallback to title search if ID lookup fails
+            if ((!results || results.length === 0) && typeof ids === 'object' && ids.title && (ids.imdbId || ids.tmdbId)) {
+                console.log('[VietMediaF] Radarr ID lookup failed, retrying with title:', ids.title);
+                results = await this.apiRequest('radarr', `/movie/lookup?term=${encodeURIComponent(ids.title)}`);
+            }
+
             if (results && results.length > 0) {
                 return results[0]; // First match
             }
@@ -209,13 +219,22 @@
                 term = `imdb:${ids.imdbId}`;
             } else if (ids.tmdbId) {
                 term = `tmdb:${ids.tmdbId}`;
+            } else if (ids.title) {
+                term = encodeURIComponent(ids.title);
             } else if (typeof ids === 'string') {
                 term = `imdb:${ids}`; // Backward compatibility
             } else {
                 return null;
             }
 
-            const results = await this.apiRequest('sonarr', `/series/lookup?term=${term}`);
+            let results = await this.apiRequest('sonarr', `/series/lookup?term=${term}`);
+            
+            // Fallback to title search if ID lookup fails
+            if ((!results || results.length === 0) && ids.title && (ids.tmdbId || ids.imdbId || ids.tvdbId)) {
+                console.log('[VietMediaF] Sonarr ID lookup failed, retrying with title:', ids.title);
+                results = await this.apiRequest('sonarr', `/series/lookup?term=${encodeURIComponent(ids.title)}`);
+            }
+
             if (results && results.length > 0) {
                 return results[0];
             }
@@ -565,18 +584,23 @@
         const tmdbInfo = extractTmdbInfo();
         if (!tmdbInfo) return;
 
+        // Extract title from slug as fallback
+        const slugMatch = location.pathname.match(/\/(?:movie|tv)\/\d+-([^/?]+)/);
+        const urlTitle = slugMatch ? decodeURIComponent(slugMatch[1]).replace(/-/g, ' ') : null;
+
         // Get IDs for Arr integration
         if (SITE_TYPE === 'tmdb') {
             // Fetch IDs from TMDB API for TMDB pages
             currentIds = await fetchExternalIdsFromTmdb(tmdbInfo.type, tmdbInfo.tmdbId);
             currentIds.tmdbId = tmdbInfo.tmdbId;
             currentIds.type = tmdbInfo.type;
+            currentIds.title = urlTitle;
             console.log('[VietMediaF] Fetched IDs from TMDB:', currentIds);
         } else {
             // Extract IDs directly from page for tracker sites
             const imdbId = extractImdbId();
             const tvdbId = extractTvdbId();
-            currentIds = { imdbId, tvdbId, tmdbId: tmdbInfo.tmdbId, type: tmdbInfo.type };
+            currentIds = { imdbId, tvdbId, tmdbId: tmdbInfo.tmdbId, type: tmdbInfo.type, title: urlTitle };
             console.log('[VietMediaF] Set currentIds:', currentIds);
         }
 
@@ -752,6 +776,11 @@
      */
     function renderDownloadBox(data, errorMessage = null, loading = false) {
         document.querySelector('#vmf-download-box')?.remove();
+        
+        // Update title from data if available
+        if (data && data.title && !currentIds.title) {
+            currentIds.title = data.title;
+        }
 
         const box = document.createElement('div');
         box.id = 'vmf-download-box';
