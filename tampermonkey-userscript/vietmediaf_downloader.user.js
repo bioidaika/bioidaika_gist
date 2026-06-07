@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VietMediaF Downloader
 // @namespace    https://github.com/bioidaika/bioidaika_gist
-// @version      1.0.7
+// @version      1.0.8
 // @updateURL    https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/vietmediaf_downloader.user.js
 // @downloadURL  https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/vietmediaf_downloader.user.js
 // @description  Hiển thị link tải VietMediaF + Radarr/Sonarr integration cho các tracker
@@ -570,12 +570,13 @@
             // Fetch IDs from TMDB API for TMDB pages
             currentIds = await fetchExternalIdsFromTmdb(tmdbInfo.type, tmdbInfo.tmdbId);
             currentIds.tmdbId = tmdbInfo.tmdbId;
+            currentIds.type = tmdbInfo.type;
             console.log('[VietMediaF] Fetched IDs from TMDB:', currentIds);
         } else {
             // Extract IDs directly from page for tracker sites
             const imdbId = extractImdbId();
             const tvdbId = extractTvdbId();
-            currentIds = { imdbId, tvdbId, tmdbId: tmdbInfo.tmdbId };
+            currentIds = { imdbId, tvdbId, tmdbId: tmdbInfo.tmdbId, type: tmdbInfo.type };
             console.log('[VietMediaF] Set currentIds:', currentIds);
         }
 
@@ -726,7 +727,7 @@
         }
 
         // Set global IMDb ID for Arr integration
-        currentIds = { imdbId, tvdbId: null, tmdbId: null };
+        currentIds = { imdbId, tvdbId: null, tmdbId: null, type: null };
 
         // Show loading state
         renderDownloadBox(null, null, true);
@@ -1084,7 +1085,7 @@
             modal.remove();
             // Refresh arr section
             const arrSection = document.querySelector('.vmf-arr-section');
-            if (arrSection && (currentIds.imdbId || currentIds.tvdbId)) {
+            if (arrSection && (currentIds.imdbId || currentIds.tvdbId || currentIds.tmdbId)) {
                 renderArrSection(arrSection);
             }
         };
@@ -1115,56 +1116,62 @@
         let html = '';
 
         // Check Radarr
-        if (ArrService.isConfigured('radarr') && (currentIds.imdbId || currentIds.tmdbId)) {
-            try {
-                const movie = await ArrService.lookupMovie(currentIds);
-                if (movie) {
-                    const tmdbTag = (movie.tmdbId || currentIds.tmdbId) ? `[M${movie.tmdbId || currentIds.tmdbId}]` : '';
-                    if (movie.id) {
-                        // Already in library
-                        html += `<div class="vmf-arr-item vmf-arr-exists">🎬 <b>${movie.title}</b>${tmdbTag} ✅ In Radarr</div>`;
-                    } else {
-                        // Can be added
-                        const imdbAttr = currentIds.imdbId ? `data-imdb="${currentIds.imdbId}"` : '';
-                        const tmdbAttr = currentIds.tmdbId ? `data-tmdb="${currentIds.tmdbId}"` : '';
-                        html += `
-                            <div class="vmf-arr-item">
-                                <span>🎬 ${movie.title} (${movie.year})${tmdbTag}</span>
-                                <button class="vmf-arr-add" data-type="radarr" ${imdbAttr} ${tmdbAttr}>➕ Add</button>
-                            </div>`;
+        const canCheckRadarr = currentIds.imdbId || (currentIds.tmdbId && currentIds.type === 'movie');
+        if (currentIds.type !== 'tv') {
+            if (ArrService.isConfigured('radarr') && canCheckRadarr) {
+                try {
+                    const movie = await ArrService.lookupMovie(currentIds);
+                    if (movie) {
+                        const tmdbTag = (movie.tmdbId || currentIds.tmdbId) ? `[M${movie.tmdbId || currentIds.tmdbId}]` : '';
+                        if (movie.id) {
+                            // Already in library
+                            html += `<div class="vmf-arr-item vmf-arr-exists">🎬 <b>${movie.title}</b>${tmdbTag} ✅ In Radarr</div>`;
+                        } else {
+                            // Can be added
+                            const imdbAttr = currentIds.imdbId ? `data-imdb="${currentIds.imdbId}"` : '';
+                            const tmdbAttr = currentIds.tmdbId ? `data-tmdb="${currentIds.tmdbId}"` : '';
+                            html += `
+                                <div class="vmf-arr-item">
+                                    <span>🎬 ${movie.title} (${movie.year})${tmdbTag}</span>
+                                    <button class="vmf-arr-add" data-type="radarr" ${imdbAttr} ${tmdbAttr}>➕ Add</button>
+                                </div>`;
+                        }
                     }
+                } catch (err) {
+                    html += `<div class="vmf-arr-item vmf-arr-error">🎬 Radarr: ${err.message}</div>`;
                 }
-            } catch (err) {
-                html += `<div class="vmf-arr-item vmf-arr-error">🎬 Radarr: ${err.message}</div>`;
+            } else {
+                html += `<div class="vmf-arr-item vmf-arr-hint">🎬 Radarr: Not configured</div>`;
             }
-        } else {
-            html += `<div class="vmf-arr-item vmf-arr-hint">🎬 Radarr: Not configured</div>`;
         }
 
         // Check Sonarr
-        if (ArrService.isConfigured('sonarr')) {
-            try {
-                const series = await ArrService.lookupSeries(currentIds);
-                if (series) {
-                    const tmdbTag = (series.tmdbId || currentIds.tmdbId) ? `[TV${series.tmdbId || currentIds.tmdbId}]` : '';
-                    if (series.id) {
-                        html += `<div class="vmf-arr-item vmf-arr-exists">📺 <b>${series.title}</b>${tmdbTag} ✅ In Sonarr</div>`;
-                    } else {
-                        const tvdbAttr = currentIds.tvdbId ? `data-tvdb="${currentIds.tvdbId}"` : '';
-                        const imdbAttr = currentIds.imdbId ? `data-imdb="${currentIds.imdbId}"` : '';
-                        const tmdbAttr = currentIds.tmdbId ? `data-tmdb="${currentIds.tmdbId}"` : '';
-                        html += `
-                            <div class="vmf-arr-item">
-                                <span>📺 ${series.title} (${series.year})${tmdbTag}</span>
-                                <button class="vmf-arr-add" data-type="sonarr" ${tvdbAttr} ${imdbAttr} ${tmdbAttr}>➕ Add</button>
-                            </div>`;
+        const canCheckSonarr = currentIds.tvdbId || currentIds.imdbId || (currentIds.tmdbId && currentIds.type === 'tv');
+        if (currentIds.type !== 'movie') {
+            if (ArrService.isConfigured('sonarr') && canCheckSonarr) {
+                try {
+                    const series = await ArrService.lookupSeries(currentIds);
+                    if (series) {
+                        const tmdbTag = (series.tmdbId || currentIds.tmdbId) ? `[TV${series.tmdbId || currentIds.tmdbId}]` : '';
+                        if (series.id) {
+                            html += `<div class="vmf-arr-item vmf-arr-exists">📺 <b>${series.title}</b>${tmdbTag} ✅ In Sonarr</div>`;
+                        } else {
+                            const tvdbAttr = currentIds.tvdbId ? `data-tvdb="${currentIds.tvdbId}"` : '';
+                            const imdbAttr = currentIds.imdbId ? `data-imdb="${currentIds.imdbId}"` : '';
+                            const tmdbAttr = currentIds.tmdbId ? `data-tmdb="${currentIds.tmdbId}"` : '';
+                            html += `
+                                <div class="vmf-arr-item">
+                                    <span>📺 ${series.title} (${series.year})${tmdbTag}</span>
+                                    <button class="vmf-arr-add" data-type="sonarr" ${tvdbAttr} ${imdbAttr} ${tmdbAttr}>➕ Add</button>
+                                </div>`;
+                        }
                     }
+                } catch (err) {
+                    html += `<div class="vmf-arr-item vmf-arr-error">📺 Sonarr: ${err.message}</div>`;
                 }
-            } catch (err) {
-                html += `<div class="vmf-arr-item vmf-arr-error">📺 Sonarr: ${err.message}</div>`;
+            } else {
+                html += `<div class="vmf-arr-item vmf-arr-hint">📺 Sonarr: Not configured</div>`;
             }
-        } else {
-            html += `<div class="vmf-arr-item vmf-arr-hint">📺 Sonarr: Not configured</div>`;
         }
 
         content.innerHTML = html || '<div class="vmf-arr-hint">No results found</div>';
