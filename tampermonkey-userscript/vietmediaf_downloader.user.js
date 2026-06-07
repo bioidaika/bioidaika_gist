@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VietMediaF Downloader
 // @namespace    https://github.com/bioidaika/bioidaika_gist
-// @version      1.0.9
+// @version      1.1.0
 // @updateURL    https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/vietmediaf_downloader.user.js
 // @downloadURL  https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/vietmediaf_downloader.user.js
 // @description  Hiển thị link tải VietMediaF + Radarr/Sonarr integration cho các tracker
@@ -1165,6 +1165,12 @@
                                     <button class="vmf-arr-add" data-type="radarr" ${imdbAttr} ${tmdbAttr}>➕ Add</button>
                                 </div>`;
                         }
+                    } else if (currentIds.title) {
+                        const tmdbTag = currentIds.tmdbId ? `[M${currentIds.tmdbId}]` : '';
+                        html += `
+                            <div class="vmf-arr-item">
+                                <span style="opacity: 0.7;">🎬 ${currentIds.title} ${tmdbTag} (Not found in Radarr search)</span>
+                            </div>`;
                     }
                 } catch (err) {
                     html += `<div class="vmf-arr-item vmf-arr-error">🎬 Radarr: ${err.message}</div>`;
@@ -1194,6 +1200,12 @@
                                     <button class="vmf-arr-add" data-type="sonarr" ${tvdbAttr} ${imdbAttr} ${tmdbAttr}>➕ Add</button>
                                 </div>`;
                         }
+                    } else if (currentIds.title) {
+                        const tmdbTag = currentIds.tmdbId ? `[TV${currentIds.tmdbId}]` : '';
+                        html += `
+                            <div class="vmf-arr-item">
+                                <span style="opacity: 0.7;">📺 ${currentIds.title} ${tmdbTag} (Not found in Sonarr search)</span>
+                            </div>`;
                     }
                 } catch (err) {
                     html += `<div class="vmf-arr-item vmf-arr-error">📺 Sonarr: ${err.message}</div>`;
