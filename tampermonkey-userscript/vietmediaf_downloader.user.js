@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VietMediaF Downloader
 // @namespace    https://github.com/bioidaika/bioidaika_gist
-// @version      1.1.0
+// @version      1.1.1
 // @updateURL    https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/vietmediaf_downloader.user.js
 // @downloadURL  https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/vietmediaf_downloader.user.js
 // @description  Hiển thị link tải VietMediaF + Radarr/Sonarr integration cho các tracker
@@ -594,7 +594,7 @@
             currentIds = await fetchExternalIdsFromTmdb(tmdbInfo.type, tmdbInfo.tmdbId);
             currentIds.tmdbId = tmdbInfo.tmdbId;
             currentIds.type = tmdbInfo.type;
-            currentIds.title = urlTitle;
+            currentIds.title = currentIds.originalTitle || urlTitle;
             console.log('[VietMediaF] Fetched IDs from TMDB:', currentIds);
         } else {
             // Extract IDs directly from page for tracker sites
@@ -709,7 +709,7 @@
      * Fetch External IDs from TMDB API
      * @param {string} type - 'movie' or 'tv'
      * @param {string} tmdbId - TMDB ID
-     * @returns {Promise<{imdbId: string|null, tvdbId: string|null}>}
+     * @returns {Promise<{imdbId: string|null, tvdbId: string|null, originalTitle: string|null}>}
      */
     async function fetchExternalIdsFromTmdb(type, tmdbId) {
         const cacheKey = `tmdb-ids-${type}-${tmdbId}`;
@@ -720,22 +720,28 @@
         }
 
         try {
-            const url = `https://api.themoviedb.org/3/${type}/${tmdbId}/external_ids?api_key=${CONFIG.TMDB_API_KEY}`;
-            const data = await gmFetch(url);
+            // Fetch external IDs and details in parallel
+            const [idsData, detailsData] = await Promise.all([
+                gmFetch(`https://api.themoviedb.org/3/${type}/${tmdbId}/external_ids?api_key=${CONFIG.TMDB_API_KEY}`),
+                gmFetch(`https://api.themoviedb.org/3/${type}/${tmdbId}?api_key=${CONFIG.TMDB_API_KEY}`).catch(() => null)
+            ]);
 
             const result = {
-                imdbId: data?.imdb_id || null,
-                tvdbId: data?.tvdb_id ? String(data.tvdb_id) : null
+                imdbId: idsData?.imdb_id || null,
+                tvdbId: idsData?.tvdb_id ? String(idsData.tvdb_id) : null,
+                originalTitle: detailsData?.original_title || detailsData?.original_name || detailsData?.name || null
             };
 
-            if (result.imdbId || result.tvdbId) {
+            console.log('[VietMediaF] TMDB details - originalTitle:', result.originalTitle);
+
+            if (result.imdbId || result.tvdbId || result.originalTitle) {
                 setCache(cacheKey, result);
             }
 
             return result;
         } catch (err) {
             console.error('[VietMediaF] Failed to fetch IDs from TMDB:', err);
-            return { imdbId: null, tvdbId: null };
+            return { imdbId: null, tvdbId: null, originalTitle: null };
         }
     }
 
