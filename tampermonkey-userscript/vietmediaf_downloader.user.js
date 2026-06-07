@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VietMediaF Downloader
 // @namespace    https://github.com/bioidaika/bioidaika_gist
-// @version      1.0.5
+// @version      1.0.6
 // @updateURL    https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/vietmediaf_downloader.user.js
 // @downloadURL  https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/vietmediaf_downloader.user.js
 // @description  Hiển thị link tải VietMediaF + Radarr/Sonarr integration cho các tracker
@@ -173,10 +173,24 @@
         },
 
         /**
-         * Lookup movie in Radarr by IMDb ID
+         * Lookup movie in Radarr by IMDb ID or TMDB ID
          */
-        async lookupMovie(imdbId) {
-            const results = await this.apiRequest('radarr', `/movie/lookup?term=imdb:${imdbId}`);
+        async lookupMovie(ids) {
+            let term = '';
+            if (ids && typeof ids === 'object') {
+                if (ids.imdbId) {
+                    term = `imdb:${ids.imdbId}`;
+                } else if (ids.tmdbId) {
+                    term = `tmdb:${ids.tmdbId}`;
+                } else {
+                    return null;
+                }
+            } else if (typeof ids === 'string') {
+                term = `imdb:${ids}`; // Backward compatibility
+            } else {
+                return null;
+            }
+            const results = await this.apiRequest('radarr', `/movie/lookup?term=${term}`);
             if (results && results.length > 0) {
                 return results[0]; // First match
             }
@@ -192,6 +206,8 @@
                 term = `tvdb:${ids.tvdbId}`;
             } else if (ids.imdbId) {
                 term = `imdb:${ids.imdbId}`;
+            } else if (ids.tmdbId) {
+                term = `tmdb:${ids.tmdbId}`;
             } else if (typeof ids === 'string') {
                 term = `imdb:${ids}`; // Backward compatibility
             } else {
@@ -454,6 +470,12 @@
                     clearTimeout(timeout);
                     if (res.status >= 200 && res.status < 300) {
                         resolve(res.response);
+                    } else if (res.status === 404) {
+                        if (res.response && res.response.sources) {
+                            resolve(res.response);
+                        } else {
+                            resolve({ sources: [] });
+                        }
                     } else {
                         reject(new Error(`API lỗi ${res.status}`));
                     }
@@ -827,9 +849,9 @@
             });
         }
 
-        // Render Arr section for any page with IMDb ID (including TMDB)
+        // Render Arr section for any page with IDs
         console.log('[VietMediaF] Debug - currentIds:', currentIds, 'SITE_TYPE:', SITE_TYPE);
-        if (currentIds.imdbId || currentIds.tvdbId) {
+        if (currentIds.imdbId || currentIds.tvdbId || currentIds.tmdbId) {
             console.log('[VietMediaF] Rendering Arr section...');
             renderArrSection(arrSection);
         } else {
@@ -1077,7 +1099,7 @@
      * @param {HTMLElement} container - Container element
      */
     async function renderArrSection(container) {
-        if (!currentIds.imdbId && !currentIds.tvdbId) return;
+        if (!currentIds.imdbId && !currentIds.tvdbId && !currentIds.tmdbId) return;
 
         container.innerHTML = `
             <div class="vmf-arr-header">📡 Radarr / Sonarr</div>
@@ -1089,10 +1111,10 @@
         const content = container.querySelector('.vmf-arr-content');
         let html = '';
 
-        // Check Radarr (requires IMDb ID)
-        if (ArrService.isConfigured('radarr') && currentIds.imdbId) {
+        // Check Radarr
+        if (ArrService.isConfigured('radarr') && (currentIds.imdbId || currentIds.tmdbId)) {
             try {
-                const movie = await ArrService.lookupMovie(currentIds.imdbId);
+                const movie = await ArrService.lookupMovie(currentIds);
                 if (movie) {
                     const tmdbTag = (movie.tmdbId || currentIds.tmdbId) ? `[M${movie.tmdbId || currentIds.tmdbId}]` : '';
                     if (movie.id) {
@@ -1100,10 +1122,12 @@
                         html += `<div class="vmf-arr-item vmf-arr-exists">🎬 <b>${movie.title}</b>${tmdbTag} ✅ In Radarr</div>`;
                     } else {
                         // Can be added
+                        const imdbAttr = currentIds.imdbId ? `data-imdb="${currentIds.imdbId}"` : '';
+                        const tmdbAttr = currentIds.tmdbId ? `data-tmdb="${currentIds.tmdbId}"` : '';
                         html += `
                             <div class="vmf-arr-item">
                                 <span>🎬 ${movie.title} (${movie.year})${tmdbTag}</span>
-                                <button class="vmf-arr-add" data-type="radarr" data-imdb="${currentIds.imdbId}">➕ Add</button>
+                                <button class="vmf-arr-add" data-type="radarr" ${imdbAttr} ${tmdbAttr}>➕ Add</button>
                             </div>`;
                     }
                 }
@@ -1125,10 +1149,11 @@
                     } else {
                         const tvdbAttr = currentIds.tvdbId ? `data-tvdb="${currentIds.tvdbId}"` : '';
                         const imdbAttr = currentIds.imdbId ? `data-imdb="${currentIds.imdbId}"` : '';
+                        const tmdbAttr = currentIds.tmdbId ? `data-tmdb="${currentIds.tmdbId}"` : '';
                         html += `
                             <div class="vmf-arr-item">
                                 <span>📺 ${series.title} (${series.year})${tmdbTag}</span>
-                                <button class="vmf-arr-add" data-type="sonarr" ${tvdbAttr} ${imdbAttr}>➕ Add</button>
+                                <button class="vmf-arr-add" data-type="sonarr" ${tvdbAttr} ${imdbAttr} ${tmdbAttr}>➕ Add</button>
                             </div>`;
                     }
                 }
@@ -1147,16 +1172,17 @@
                 const type = btn.dataset.type;
                 const imdbId = btn.dataset.imdb;
                 const tvdbId = btn.dataset.tvdb;
+                const tmdbId = btn.dataset.tmdb;
 
                 btn.disabled = true;
                 btn.textContent = '⏳';
 
                 try {
+                    const ids = { imdbId, tvdbId, tmdbId };
                     if (type === 'radarr') {
-                        const movie = await ArrService.lookupMovie(imdbId);
+                        const movie = await ArrService.lookupMovie(ids);
                         await ArrService.addMovie(movie);
                     } else {
-                        const ids = { imdbId, tvdbId };
                         const series = await ArrService.lookupSeries(ids);
                         await ArrService.addSeries(series);
                     }
