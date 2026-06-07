@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VietMediaF Downloader
 // @namespace    https://github.com/bioidaika/bioidaika_gist
-// @version      1.0.6
+// @version      1.0.7
 // @updateURL    https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/vietmediaf_downloader.user.js
 // @downloadURL  https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/vietmediaf_downloader.user.js
 // @description  Hiển thị link tải VietMediaF + Radarr/Sonarr integration cho các tracker
@@ -18,6 +18,7 @@
 // @match        https://exoticaz.to/torrent/*
 // @match        *://*/*.html
 // @match        *://*/details.php*
+// @match        *://*/torrents.php*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setClipboard
 // @grant        GM_getValue
@@ -340,12 +341,14 @@
         // UNIT3D detection: any site with /torrents/ or /requests/ path
         if (path.includes('/torrents/') || path.includes('/requests/')) return 'unit3d';
 
-        // NexusPHP detection: common URL patterns
+        // NexusPHP / Gazelle detection: common URL patterns
         // Pattern 1: *-torrent-*.html (NetHD style)
         // Pattern 2: details.php?id=* (classic NexusPHP)
-        // Pattern 3: torrent page with IMDb link
+        // Pattern 3: torrents.php?id=* (Gazelle/GPW)
+        // Pattern 4: torrent page with IMDb link
         if (path.match(/-torrent-\d+\.html$/) ||
             path.includes('details.php') ||
+            path.includes('torrents.php') ||
             (path.endsWith('.html') && document.querySelector('a[href*="imdb.com/title/"]'))) {
             return 'nexusphp';
         }
