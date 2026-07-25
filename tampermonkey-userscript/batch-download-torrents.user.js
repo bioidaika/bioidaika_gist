@@ -1,14 +1,16 @@
 // ==UserScript==
-// @name         Universal Tracker - Smart Quality Download v3.2 (UNIT3D + NexusPHP + IPTorrents)
+// @name         Universal Tracker - Reliable Smart Torrent Download v4.0
 // @namespace    https://github.com/bioidaika/bioidaika_gist
-// @version      3.2.0
+// @version      4.0.0
 // @updateURL    https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/batch-download-torrents.user.js
 // @downloadURL  https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/batch-download-torrents.user.js
-// @description  Download BEST QUALITY torrent from each group (UNIT3D grouped + flat + NexusPHP + Kokocon + IPTorrents) with infinite auto-retry
+// @description  Download validated torrent files from UNIT3D, NexusPHP, Kokocon and IPTorrents with bounded retry and cancellation
 // @match        https://*/torrents*
-// @match        *://tracker.kokocon.net/index.php*
-// @match        *://www.iptorrents.com/t*
+// @match        https://tracker.kokocon.net/index.php*
+// @match        https://www.iptorrents.com/t*
 // @grant        none
+// @run-at       document-idle
+// @noframes
 // ==/UserScript==
 
 (function () {
@@ -17,94 +19,254 @@
     const DELAY = 2200;
     const RETRY_DELAY_BASE = 2200;
     const MAX_RETRY_DELAY = 30000; // Cap retry delay at 30 seconds
+    const MAX_ATTEMPTS = 4;
+    const REQUEST_TIMEOUT = 45000;
+    const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 
-    // Quality scoring function
+    const QUALITY_FEATURES = {
+        resolution: [
+            { label: '8K', score: 7000, pattern: '(?:4320p|8k)' },
+            { label: '4K', score: 6000, pattern: '(?:2160p|4k|uhd)' },
+            { label: '1440p', score: 5000, pattern: '1440p' },
+            { label: '1080p', score: 4000, pattern: '1080p' },
+            { label: '1080i', score: 3800, pattern: '1080i' },
+            { label: '720p', score: 3000, pattern: '720p' },
+            { label: '576p', score: 2000, pattern: '(?:576p|576i)' },
+            { label: '480p', score: 1000, pattern: '(?:480p|480i)' }
+        ],
+        source: [
+            { label: 'REMUX', score: 600, pattern: 'remux' },
+            { label: 'BluRay', score: 500, pattern: '(?:blu[\\s._-]*ray|bdrip|brrip)' },
+            { label: 'WEB-DL', score: 400, pattern: 'web[\\s._-]*dl' },
+            { label: 'WEBRip', score: 300, pattern: 'web[\\s._-]*rip' },
+            { label: 'HDTV', score: 200, pattern: 'hdtv' },
+            { label: 'DVD', score: 100, pattern: 'dvd(?:[\\s._-]*rip)?' }
+        ],
+        codec: [
+            { label: 'AV1', score: 100, pattern: 'av1' },
+            { label: 'HEVC', score: 90, pattern: '(?:x265|h[\\s._-]*265|hevc)' },
+            { label: 'AVC', score: 60, pattern: '(?:x264|h[\\s._-]*264|avc)' }
+        ],
+        audio: [
+            { label: 'Atmos', score: 250, pattern: 'atmos' },
+            { label: 'TrueHD', score: 220, pattern: 'true[\\s._-]*hd' },
+            { label: 'DTS-HD', score: 190, pattern: 'dts[\\s._-]*hd(?:[\\s._-]*ma)?' },
+            { label: 'DTS', score: 140, pattern: 'dts' },
+            { label: 'DD+', score: 120, pattern: '(?:dd\\+|ddp|e[\\s._-]*ac[\\s._-]*3|eac3)' },
+            { label: 'DD', score: 90, pattern: '(?:dd|ac[\\s._-]*3|ac3)' },
+            { label: 'AAC', score: 60, pattern: 'aac' }
+        ],
+        hdr: [
+            { label: 'DV', score: 180, pattern: '(?:dolby[\\s._-]*vision|dovi|dv)' },
+            { label: 'HDR10+', score: 150, pattern: 'hdr10\\+' },
+            { label: 'HDR10', score: 130, pattern: 'hdr10' },
+            { label: 'HDR', score: 100, pattern: '(?:hdr|hlg)' }
+        ]
+    };
+    const BAD_SOURCE_PATTERN = '(?:hd[\\s._-]*cam|cam[\\s._-]*rip|cam|hdts|telesync|telecine|workprint|dvd[\\s._-]*scr|screener)';
+
+    function normalizeTorrentText(value) {
+        return String(value || '')
+            .normalize('NFKC')
+            .replace(/[\u200B-\u200D\uFEFF]/g, '')
+            .replace(/\u00A0/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    // Match release tokens, not arbitrary substrings such as "dv" in "adventure".
+    function hasQualityToken(text, pattern) {
+        return new RegExp('(?:^|[^a-z0-9])(?:' + pattern + ')(?=$|[^a-z0-9])', 'i').test(text);
+    }
+
+    function removeQualityToken(text, pattern) {
+        return text.replace(
+            new RegExp('(?:^|[^a-z0-9])(?:' + pattern + ')(?=$|[^a-z0-9])', 'gi'),
+            ' '
+        );
+    }
+
+    function firstQualityFeature(text, features) {
+        return features.find(function (feature) {
+            return hasQualityToken(text, feature.pattern);
+        }) || null;
+    }
+
+    function parseQuality(name) {
+        const text = normalizeTorrentText(name).toLowerCase();
+        const resolution = firstQualityFeature(text, QUALITY_FEATURES.resolution);
+        const source = firstQualityFeature(text, QUALITY_FEATURES.source);
+        const codec = firstQualityFeature(text, QUALITY_FEATURES.codec);
+        const audio = firstQualityFeature(text, QUALITY_FEATURES.audio);
+        const hdr = firstQualityFeature(text, QUALITY_FEATURES.hdr);
+        const badSource = hasQualityToken(text, BAD_SOURCE_PATTERN);
+        const upscale = hasQualityToken(text, 'upscal(?:e|ed)');
+        const proper = hasQualityToken(text, 'proper');
+        const repack = hasQualityToken(text, 'repack');
+
+        const score =
+            (resolution ? resolution.score : 0) +
+            (source ? source.score : 0) +
+            (codec ? codec.score : 0) +
+            (audio ? audio.score : 0) +
+            (hdr ? hdr.score : 0) +
+            (proper ? 60 : 0) +
+            (repack ? 60 : 0) -
+            (badSource ? 10000 : 0) -
+            (upscale ? 800 : 0);
+
+        return {
+            resolution: resolution,
+            source: source,
+            codec: codec,
+            audio: audio,
+            hdr: hdr,
+            proper: proper,
+            repack: repack,
+            score: score,
+            label: [
+                resolution && resolution.label,
+                source && source.label,
+                codec && codec.label,
+                hdr && hdr.label,
+                repack ? 'REPACK' : (proper ? 'PROPER' : null)
+            ].filter(Boolean).join(' ') || 'Unknown'
+        };
+    }
+
     function getQualityScore(name) {
-        let score = 0;
-        const n = name.toLowerCase();
-
-        // Resolution (highest priority)
-        if (n.includes('2160p') || n.includes('4k') || n.includes('uhd')) score += 1000;
-        else if (n.includes('1080p')) score += 500;
-        else if (n.includes('1080i')) score += 450;
-        else if (n.includes('720p')) score += 250;
-        else if (n.includes('576p') || n.includes('576i')) score += 100;
-        else if (n.includes('480p') || n.includes('480i')) score += 50;
-
-        // Source quality
-        if (n.includes('remux')) score += 300;
-        else if (n.includes('bluray') || n.includes('blu-ray')) score += 200;
-        else if (n.includes('web-dl') || n.includes('webdl')) score += 150;
-        else if (n.includes('webrip')) score += 100;
-        else if (n.includes('hdtv')) score += 50;
-
-        // Codec
-        if (n.includes('x265') || n.includes('hevc') || n.includes('h.265')) score += 50;
-        else if (n.includes('av1')) score += 45;
-        else if (n.includes('x264') || n.includes('avc')) score += 30;
-
-        // Audio
-        if (n.includes('atmos') || n.includes('truehd')) score += 100;
-        else if (n.includes('dts-hd')) score += 80;
-        else if (n.includes('dts')) score += 50;
-        else if (n.includes('dd+') || n.includes('eac3')) score += 40;
-        else if (n.includes('dd') || n.includes('ac3')) score += 30;
-
-        // HDR
-        if (n.includes('dv') || n.includes('dolby vision')) score += 50;
-        else if (n.includes('hdr10+')) score += 40;
-        else if (n.includes('hdr')) score += 30;
-
-        return score;
+        return parseQuality(name).score;
     }
 
-    // Get quality label
     function getLabel(name) {
-        const n = name.toLowerCase();
-        let p = [];
-        if (n.includes('2160p') || n.includes('4k')) p.push('4K');
-        else if (n.includes('1080p')) p.push('1080p');
-        else if (n.includes('720p')) p.push('720p');
-        if (n.includes('remux')) p.push('REMUX');
-        else if (n.includes('bluray')) p.push('BluRay');
-        else if (n.includes('web-dl')) p.push('WEB-DL');
-        if (n.includes('hevc') || n.includes('x265')) p.push('HEVC');
-        return p.join(' ') || 'SD';
+        return parseQuality(name).label;
     }
 
-    // Group torrents by base title (remove quality/codec info)
+    // Group by title while preserving year, episode, edition and language markers.
     function groupTorrentsByTitle(torrents) {
         const groups = new Map();
+        const removablePatterns = []
+            .concat(QUALITY_FEATURES.resolution)
+            .concat(QUALITY_FEATURES.source)
+            .concat(QUALITY_FEATURES.codec)
+            .concat(QUALITY_FEATURES.audio)
+            .concat(QUALITY_FEATURES.hdr)
+            .map(function (feature) { return feature.pattern; })
+            .concat([
+                BAD_SOURCE_PATTERN,
+                'upscal(?:e|ed)',
+                '(?:proper|repack|rerip|internal)',
+                '(?:(?:8|10|12)[\\s._-]*bit)',
+                '(?:1[\\s._-]*0|2[\\s._-]*0|5[\\s._-]*1|7[\\s._-]*1)',
+                '(?:mkv|mp4)'
+            ]);
 
-        torrents.forEach(torrent => {
-            // Extract base title by removing common quality markers
-            let baseTitle = torrent.name
-                .replace(/\b(2160p|1080p|720p|576p|480p|4k|uhd)\b/gi, '')
-                .replace(/\b(remux|bluray|blu-ray|web-dl|webdl|webrip|hdtv|brrip|bdrip)\b/gi, '')
-                .replace(/\b(x264|x265|h\.?264|h\.?265|hevc|avc|av1)\b/gi, '')
-                .replace(/\b(atmos|truehd|dts-hd|dts|dd\+?|eac3|ac3|aac)\b/gi, '')
-                .replace(/\b(hdr10\+?|dolby vision|dv|hdr)\b/gi, '')
-                .replace(/\b(proper|repack|internal|limited)\b/gi, '')
-                .replace(/[-_.]/g, ' ')
+        torrents.forEach(function (torrent) {
+            const parsed = parseQuality(torrent.name);
+            let baseTitle = normalizeTorrentText(torrent.name).toLowerCase();
+
+            // Strip a release-group suffix only when a technical marker precedes it.
+            baseTitle = baseTitle.replace(
+                /((?:x26[45]|h[\s._]?26[45]|hevc|av1|web[\s._-]?dl|blu[\s._-]?ray|remux|dts(?:[\s._-]*hd)?|ddp?))-([a-z0-9][a-z0-9._]{1,30})$/i,
+                '$1'
+            );
+            removablePatterns.forEach(function (pattern) {
+                baseTitle = removeQualityToken(baseTitle, pattern);
+            });
+            baseTitle = baseTitle
+                .replace(/[\[\](){}]/g, ' ')
+                .replace(/[._]+/g, ' ')
+                .replace(/\s+-\s+/g, ' ')
                 .replace(/\s+/g, ' ')
-                .trim()
-                .toLowerCase();
+                .trim();
 
-            // Extract year if present
-            const yearMatch = torrent.name.match(/\b(19|20)\d{2}\b/);
-            if (yearMatch) {
-                baseTitle = baseTitle.replace(yearMatch[0].toLowerCase(), '').trim() + ' ' + yearMatch[0];
+            const key = baseTitle || normalizeTorrentText(torrent.name).toLowerCase();
+            if (!groups.has(key)) {
+                groups.set(key, []);
             }
-
-            if (!groups.has(baseTitle)) {
-                groups.set(baseTitle, []);
-            }
-            groups.get(baseTitle).push(torrent);
+            groups.get(key).push(torrent);
+            torrent.parsedQuality = parsed;
         });
 
         return Array.from(groups.values());
     }
 
+    function findFlatNameLink(downloadLink) {
+        let node = downloadLink.closest('tr');
+        if (node) {
+            const rowLink = node.querySelector('a[href*="/torrents/"]:not([href*="/download/"])');
+            if (rowLink) {
+                return rowLink;
+            }
+        }
+
+        node = downloadLink.parentElement;
+        for (let depth = 0; node && node !== document.body && depth < 8; depth++) {
+            const links = node.querySelectorAll('a[href*="/torrents/"]:not([href*="/download/"])');
+            if (links.length === 1) {
+                return links[0];
+            }
+            node = node.parentElement;
+        }
+        return null;
+    }
+
+    function normalizeTorrentJobs(torrents) {
+        const seenUrls = new Set();
+        const jobs = [];
+
+        torrents.forEach(function (torrent) {
+            const rawHref = torrent.link && (torrent.link.getAttribute('href') || torrent.link.href);
+            let url;
+            try {
+                url = new URL(rawHref, location.href);
+            } catch (error) {
+                return;
+            }
+
+            const allowedPath =
+                url.pathname.includes('/torrents/download/') ||
+                /\/download\.php(?:\/|$)/i.test(url.pathname);
+            if (
+                url.protocol !== 'https:' ||
+                url.origin !== location.origin ||
+                url.username ||
+                url.password ||
+                !allowedPath
+            ) {
+                return;
+            }
+
+            url.hash = '';
+            if (seenUrls.has(url.href)) {
+                return;
+            }
+            seenUrls.add(url.href);
+            jobs.push(Object.assign({}, torrent, {
+                url: url.href,
+                link: null
+            }));
+        });
+
+        return jobs;
+    }
+
+    const initialHostname = location.hostname.toLowerCase().replace(/\.$/, '');
+    const knownTrackerHost =
+        initialHostname === 'kokocon.net' ||
+        initialHostname.endsWith('.kokocon.net') ||
+        initialHostname === 'iptorrents.com' ||
+        initialHostname.endsWith('.iptorrents.com');
+    const hasTrackerMarkup = Boolean(document.querySelector(
+        'table.torrent-search--grouped__torrents, table.torrent, table.torrents, #torrenttable, ' +
+        'a[href*="/torrents/download/"], a[href*="download.php"]'
+    ));
+    // Avoid injecting a control on an unrelated page that merely happens to match /torrents.
+    if (!knownTrackerHost && !hasTrackerMarkup) {
+        return;
+    }
+
+    let activeDownloadController = null;
     const btn = document.createElement('button');
     btn.textContent = '🎯 Best Quality';
     btn.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:9999;padding:12px 16px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;box-shadow:0 4px 15px rgba(102,126,234,0.4)';
@@ -192,7 +354,358 @@
         });
     }
 
+    class TorrentDownloadError extends Error {
+        constructor(message, retryable, retryAfterMs) {
+            super(message);
+            this.name = 'TorrentDownloadError';
+            this.retryable = Boolean(retryable);
+            this.retryAfterMs = Number.isFinite(retryAfterMs) ? retryAfterMs : null;
+        }
+    }
+
+    function abortError() {
+        try {
+            return new DOMException('Download cancelled', 'AbortError');
+        } catch (error) {
+            const result = new Error('Download cancelled');
+            result.name = 'AbortError';
+            return result;
+        }
+    }
+
+    function throwIfAborted(signal) {
+        if (signal && signal.aborted) {
+            throw abortError();
+        }
+    }
+
+    function abortableDelay(milliseconds, signal) {
+        return new Promise((resolve, reject) => {
+            let timer;
+            const onAbort = () => {
+                clearTimeout(timer);
+                cleanup();
+                reject(abortError());
+            };
+            const cleanup = () => {
+                if (signal) signal.removeEventListener('abort', onAbort);
+            };
+            throwIfAborted(signal);
+            if (signal) signal.addEventListener('abort', onAbort, { once: true });
+            timer = setTimeout(() => {
+                cleanup();
+                resolve();
+            }, milliseconds);
+        });
+    }
+
+    function parseRetryAfter(value) {
+        if (!value) return null;
+        const seconds = Number(value);
+        if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+        const date = Date.parse(value);
+        return Number.isFinite(date) ? Math.max(0, date - Date.now()) : null;
+    }
+
+    async function readTorrentBytes(response, signal) {
+        const declaredLength = Number(response.headers.get('content-length'));
+        if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
+            throw new TorrentDownloadError('Torrent response exceeds the safety limit', false);
+        }
+
+        if (!response.body || typeof response.body.getReader !== 'function') {
+            const buffer = await response.arrayBuffer();
+            if (buffer.byteLength > MAX_RESPONSE_BYTES) {
+                throw new TorrentDownloadError('Torrent response exceeds the safety limit', false);
+            }
+            return new Uint8Array(buffer);
+        }
+
+        const reader = response.body.getReader();
+        const chunks = [];
+        let total = 0;
+        try {
+            while (true) {
+                throwIfAborted(signal);
+                const part = await reader.read();
+                if (part.done) break;
+                total += part.value.byteLength;
+                if (total > MAX_RESPONSE_BYTES) {
+                    await reader.cancel();
+                    throw new TorrentDownloadError('Torrent response exceeds the safety limit', false);
+                }
+                chunks.push(part.value);
+            }
+        } finally {
+            reader.releaseLock();
+        }
+
+        const bytes = new Uint8Array(total);
+        let offset = 0;
+        chunks.forEach(chunk => {
+            bytes.set(chunk, offset);
+            offset += chunk.byteLength;
+        });
+        return bytes;
+    }
+
+    // Validate the bencode structure and require a root-level dictionary named "info".
+    function validateTorrentBytes(bytes) {
+        if (!(bytes instanceof Uint8Array) || bytes.length < 10 || bytes[0] !== 100) {
+            throw new TorrentDownloadError('Response is not a torrent file', false);
+        }
+
+        let cursor = 0;
+        let foundInfo = false;
+        const fail = () => {
+            throw new TorrentDownloadError('Response is not a valid bencoded torrent', false);
+        };
+        const digit = value => value >= 48 && value <= 57;
+
+        function stringValue() {
+            if (!digit(bytes[cursor])) fail();
+            const start = cursor;
+            let length = 0;
+            while (cursor < bytes.length && digit(bytes[cursor])) {
+                length = length * 10 + bytes[cursor] - 48;
+                if (!Number.isSafeInteger(length) || length > MAX_RESPONSE_BYTES) fail();
+                cursor++;
+            }
+            if (bytes[cursor] !== 58 || (cursor - start > 1 && bytes[start] === 48)) fail();
+            cursor++;
+            const valueStart = cursor;
+            cursor += length;
+            if (cursor > bytes.length) fail();
+            return { start: valueStart, end: cursor };
+        }
+
+        function isKey(range, value) {
+            if (range.end - range.start !== value.length) return false;
+            for (let i = 0; i < value.length; i++) {
+                if (bytes[range.start + i] !== value.charCodeAt(i)) return false;
+            }
+            return true;
+        }
+
+        function integerValue() {
+            cursor++;
+            const start = cursor;
+            if (bytes[cursor] === 45) cursor++;
+            const digits = cursor;
+            while (cursor < bytes.length && digit(bytes[cursor])) cursor++;
+            const count = cursor - digits;
+            if (!count || bytes[cursor] !== 101 || (count > 1 && bytes[digits] === 48)) fail();
+            if (bytes[start] === 45 && count === 1 && bytes[digits] === 48) fail();
+            cursor++;
+        }
+
+        function value(depth) {
+            if (depth > 100 || cursor >= bytes.length) fail();
+            const type = bytes[cursor];
+            if (digit(type)) {
+                stringValue();
+                return;
+            }
+            if (type === 105) {
+                integerValue();
+                return;
+            }
+            if (type === 108) {
+                cursor++;
+                while (bytes[cursor] !== 101) value(depth + 1);
+                cursor++;
+                return;
+            }
+            if (type === 100) {
+                cursor++;
+                while (bytes[cursor] !== 101) {
+                    const key = stringValue();
+                    const infoKey = depth === 0 && isKey(key, 'info');
+                    if (infoKey && bytes[cursor] !== 100) fail();
+                    value(depth + 1);
+                    if (infoKey) foundInfo = true;
+                }
+                cursor++;
+                return;
+            }
+            fail();
+        }
+
+        value(0);
+        if (cursor !== bytes.length || !foundInfo) fail();
+    }
+
+    function responseFilename(response, fallback) {
+        const header = response.headers.get('content-disposition') || '';
+        let filename = '';
+        const extended = header.match(/filename\*\s*=\s*(?:"([^"]+)"|([^;]+))/i);
+        const basic = header.match(/filename\s*=\s*(?:"([^"]*)"|([^;]*))/i);
+        if (extended) {
+            filename = (extended[1] || extended[2]).trim();
+            const separator = filename.indexOf("''");
+            if (separator >= 0) filename = filename.slice(separator + 2);
+            try { filename = decodeURIComponent(filename); } catch (error) { /* keep raw */ }
+        } else if (basic) {
+            filename = (basic[1] || basic[2]).trim();
+        }
+        filename = normalizeTorrentText(filename || fallback)
+            .replace(/[\u0000-\u001F\u007F]/g, '')
+            .replace(/[\u202A-\u202E\u2066-\u2069]/g, '')
+            .replace(/[\\/:*?"<>|]/g, '_')
+            .replace(/\.torrent$/i, '')
+            .replace(/[.\s]+$/g, '')
+            .slice(0, 180);
+        return (filename || 'torrent') + '.torrent';
+    }
+
+    function uniqueFilename(filename, used) {
+        const lower = filename.toLowerCase();
+        if (!used.has(lower)) {
+            used.add(lower);
+            return filename;
+        }
+        const base = filename.replace(/\.torrent$/i, '');
+        let index = 2;
+        let candidate = base + ' (' + index + ').torrent';
+        while (used.has(candidate.toLowerCase())) {
+            index++;
+            candidate = base + ' (' + index + ').torrent';
+        }
+        used.add(candidate.toLowerCase());
+        return candidate;
+    }
+
+    async function fetchTorrentFile(torrent, signal) {
+        const requestController = new AbortController();
+        let timedOut = false;
+        const timeout = setTimeout(() => {
+            timedOut = true;
+            requestController.abort();
+        }, REQUEST_TIMEOUT);
+        const onAbort = () => requestController.abort();
+        signal.addEventListener('abort', onAbort, { once: true });
+
+        try {
+            const response = await fetch(torrent.url, {
+                credentials: 'same-origin',
+                redirect: 'follow',
+                cache: 'no-store',
+                signal: requestController.signal,
+                headers: { Accept: 'application/x-bittorrent, application/octet-stream;q=0.9, */*;q=0.1' }
+            });
+            const finalUrl = new URL(response.url || torrent.url, location.href);
+            if (finalUrl.protocol !== 'https:' || finalUrl.origin !== location.origin) {
+                throw new TorrentDownloadError('Download redirected outside the tracker origin', false);
+            }
+            if (!response.ok) {
+                throw new TorrentDownloadError(
+                    'Tracker returned HTTP ' + response.status,
+                    [408, 425, 429, 500, 502, 503, 504].includes(response.status),
+                    parseRetryAfter(response.headers.get('retry-after'))
+                );
+            }
+            const contentType = (response.headers.get('content-type') || '').toLowerCase();
+            if (contentType.includes('text/html') || contentType.includes('application/json')) {
+                throw new TorrentDownloadError('Tracker returned a login/error page', false);
+            }
+            const bytes = await readTorrentBytes(response, requestController.signal);
+            validateTorrentBytes(bytes);
+            return { bytes: bytes, filename: responseFilename(response, torrent.name) };
+        } catch (error) {
+            if (signal.aborted) throw abortError();
+            if (timedOut) throw new TorrentDownloadError('Request timed out', true);
+            if (error instanceof TorrentDownloadError) throw error;
+            if (error.name === 'AbortError' || error instanceof TypeError) {
+                throw new TorrentDownloadError('Network request failed or was blocked', true);
+            }
+            throw error;
+        } finally {
+            clearTimeout(timeout);
+            signal.removeEventListener('abort', onAbort);
+        }
+    }
+
+    function saveTorrentFile(file, filename, signal) {
+        throwIfAborted(signal);
+        const objectUrl = URL.createObjectURL(new Blob([file.bytes], { type: 'application/x-bittorrent' }));
+        const anchor = document.createElement('a');
+        anchor.href = objectUrl;
+        anchor.download = filename;
+        anchor.rel = 'noopener';
+        anchor.style.display = 'none';
+        document.body.appendChild(anchor);
+        try {
+            throwIfAborted(signal);
+            anchor.click();
+        } finally {
+            anchor.remove();
+            setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+        }
+    }
+
+    async function downloadTorrentWithRetry(torrent, index, total, signal, usedNames, onProgress) {
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            throwIfAborted(signal);
+            onProgress('download', index, total, torrent, attempt);
+            try {
+                const file = await fetchTorrentFile(torrent, signal);
+                saveTorrentFile(file, uniqueFilename(file.filename, usedNames), signal);
+                return;
+            } catch (error) {
+                if (error.name === 'AbortError') throw error;
+                if (!(error instanceof TorrentDownloadError) || !error.retryable || attempt === MAX_ATTEMPTS) {
+                    throw error;
+                }
+                const exponential = Math.min(RETRY_DELAY_BASE * Math.pow(2, attempt - 1), MAX_RETRY_DELAY);
+                const retryAfter = Number.isFinite(error.retryAfterMs) ? error.retryAfterMs : 0;
+                const delay = Math.min(Math.max(exponential, retryAfter), MAX_RETRY_DELAY);
+                onProgress('retry', index, total, torrent, attempt + 1, delay);
+                await abortableDelay(delay, signal);
+            }
+        }
+    }
+
+    async function runDownloadQueue(torrents, controller, onProgress) {
+        const result = { handedToBrowser: 0, failed: 0, cancelled: false };
+        const usedNames = new Set();
+        for (let index = 0; index < torrents.length; index++) {
+            try {
+                await downloadTorrentWithRetry(
+                    torrents[index],
+                    index,
+                    torrents.length,
+                    controller.signal,
+                    usedNames,
+                    onProgress
+                );
+                result.handedToBrowser++;
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    result.cancelled = true;
+                    break;
+                }
+                result.failed++;
+                console.error('[Download] Item ' + (index + 1) + ' failed: ' + (error.message || 'unknown error'));
+            }
+            if (index < torrents.length - 1) {
+                try {
+                    await abortableDelay(DELAY, controller.signal);
+                } catch (error) {
+                    result.cancelled = true;
+                    break;
+                }
+            }
+        }
+        return result;
+    }
+
     btn.onclick = async () => {
+        if (activeDownloadController) {
+            activeDownloadController.abort();
+            btn.textContent = '⏳ Cancelling...';
+            return;
+        }
+
         // Show mode selection dialog
         const mode = await showModeDialog();
 
@@ -208,9 +721,18 @@
         // UNIT3D flat: has /torrents/download/ links but no grouped table (e.g. lst.gg)
         const isUNIT3DFlat = !isUNIT3DGrouped && document.querySelectorAll('a[href*="/torrents/download/"]').length > 0;
         const isUNIT3D = isUNIT3DGrouped || isUNIT3DFlat;
-        const isNexusPHP = !isUNIT3D && document.querySelectorAll('table.torrent').length > 0;
-        const isKokocon = location.hostname.includes('kokocon.net');
-        const isIPTorrents = location.hostname.includes('iptorrents.com');
+        const isNexusPHP = !isUNIT3D &&
+            document.querySelector('table.torrent, table.torrents, #torrenttable') !== null;
+        const hostname = location.hostname.toLowerCase().replace(/\.$/, '');
+        const isKokocon = hostname === 'kokocon.net' || hostname.endsWith('.kokocon.net');
+        const isIPTorrents = hostname === 'iptorrents.com' || hostname.endsWith('.iptorrents.com');
+        const trackerType = isKokocon
+            ? 'kokocon'
+            : (isIPTorrents
+                ? 'iptorrents'
+                : (isUNIT3D
+                    ? 'unit3d'
+                    : (isNexusPHP ? 'nexusphp' : 'unknown')));
 
         console.log(`[Tracker Type] UNIT3D-Grouped: ${isUNIT3DGrouped}, UNIT3D-Flat: ${isUNIT3DFlat}, NexusPHP: ${isNexusPHP}, Kokocon: ${isKokocon}, IPTorrents: ${isIPTorrents}`);
 
@@ -221,7 +743,7 @@
         if (mode === 'all') {
             console.log('[Mode] Download All - Collecting all torrents...');
 
-            if (isUNIT3D) {
+            if (trackerType === 'unit3d') {
                 if (isUNIT3DGrouped) {
                     // UNIT3D Grouped view
                     const tables = document.querySelectorAll('table.torrent-search--grouped__torrents');
@@ -254,8 +776,7 @@
 
                     downloadLinks.forEach(downloadLink => {
                         // Walk up to find the closest row/container, then find the torrent name link
-                        const row = downloadLink.closest('tr') || downloadLink.closest('div') || downloadLink.parentElement;
-                        const nameLink = row ? row.querySelector('a[href*="/torrents/"]:not([href*="/download/"])') : null;
+                        const nameLink = findFlatNameLink(downloadLink);
 
                         if (nameLink) {
                             const name = nameLink.textContent.trim();
@@ -272,8 +793,8 @@
                         }
                     });
                 }
-            } else if (isNexusPHP) {
-                const table = document.querySelector('table.torrent');
+            } else if (trackerType === 'nexusphp') {
+                const table = document.querySelector('table.torrent, table.torrents, #torrenttable');
                 if (!table) {
                     alert('❌ No torrent table found');
                     return;
@@ -281,14 +802,16 @@
 
                 const rows = table.querySelectorAll('tr');
                 rows.forEach(tr => {
-                    const downloadLink = tr.querySelector('a[href*="download.php?id="]');
-                    const nameLinks = tr.querySelectorAll('td.name a[href*="torrent"]');
+                    const downloadLink = tr.querySelector('a[href*="download.php"]');
+                    const nameLinks = tr.querySelectorAll(
+                        'td.name a, a[href*="details.php"], a[href*="torrent.php"]'
+                    );
                     let nameLink = null;
 
                     for (const link of nameLinks) {
                         if (!link.href.includes('download') && !link.href.includes('bookmark')) {
                             const text = link.textContent.trim();
-                            if (text.length > 10) {
+                            if (text && !/^(?:download|bookmark|view|details?)$/i.test(text)) {
                                 nameLink = link;
                                 break;
                             }
@@ -308,7 +831,7 @@
                         qualityCounts[label] = (qualityCounts[label] || 0) + 1;
                     }
                 });
-            } else if (isKokocon) {
+            } else if (trackerType === 'kokocon') {
                 // Kokocon - plain table with no CSS classes
                 const rows = document.querySelectorAll('table tr');
                 console.log(`[Found] ${rows.length} rows (Kokocon)`);
@@ -330,13 +853,13 @@
                         qualityCounts[label] = (qualityCounts[label] || 0) + 1;
                     }
                 });
-            } else if (isIPTorrents) {
+            } else if (trackerType === 'iptorrents') {
                 // IPTorrents - table#torrents has the search results, skip top_torrents sections
                 const rows = document.querySelectorAll('table#torrents tr');
                 console.log(`[Found] ${rows.length} rows (IPTorrents)`);
 
                 rows.forEach(tr => {
-                    const downloadLink = tr.querySelector('a[href*="/download.php/"]');
+                    const downloadLink = tr.querySelector('a[href*="download.php"]');
                     const nameLink = tr.querySelector('a.hv');
 
                     if (downloadLink && nameLink) {
@@ -361,7 +884,7 @@
         } else if (mode === 'smart') {
             console.log('[Mode] Smart Filter - Selecting best quality...');
 
-            if (isUNIT3D) {
+            if (trackerType === 'unit3d') {
                 if (isUNIT3DGrouped) {
                     // UNIT3D - Grouped tables
                     const tables = document.querySelectorAll('table.torrent-search--grouped__torrents');
@@ -415,8 +938,7 @@
                     const allTorrents = [];
 
                     downloadLinks.forEach(downloadLink => {
-                        const row = downloadLink.closest('tr') || downloadLink.closest('div') || downloadLink.parentElement;
-                        const nameLink = row ? row.querySelector('a[href*="/torrents/"]:not([href*="/download/"])') : null;
+                        const nameLink = findFlatNameLink(downloadLink);
 
                         if (nameLink) {
                             const name = nameLink.textContent.trim();
@@ -460,9 +982,9 @@
                     });
                 }
 
-            } else if (isNexusPHP) {
+            } else if (trackerType === 'nexusphp') {
                 // NexusPHP - Parse table rows and group by title
-                const table = document.querySelector('table.torrent');
+                const table = document.querySelector('table.torrent, table.torrents, #torrenttable');
 
                 if (!table) {
                     alert('❌ No torrent table found');
@@ -477,17 +999,19 @@
 
                 rows.forEach(tr => {
                     // NexusPHP: download.php?id=xxxxx
-                    const downloadLink = tr.querySelector('a[href*="download.php?id="]');
+                    const downloadLink = tr.querySelector('a[href*="download.php"]');
 
                     // Find torrent name link (links to torrent details page, not download)
-                    const nameLinks = tr.querySelectorAll('td.name a[href*="torrent"]');
+                    const nameLinks = tr.querySelectorAll(
+                        'td.name a, a[href*="details.php"], a[href*="torrent.php"]'
+                    );
                     let nameLink = null;
 
                     // Find the main torrent title link (usually the longest or contains the full name)
                     for (const link of nameLinks) {
                         if (!link.href.includes('download') && !link.href.includes('bookmark')) {
                             const text = link.textContent.trim();
-                            if (text.length > 10) { // Ignore short labels
+                            if (text && !/^(?:download|bookmark|view|details?)$/i.test(text)) {
                                 nameLink = link;
                                 break;
                             }
@@ -536,7 +1060,7 @@
                     }
                 });
 
-            } else if (isKokocon) {
+            } else if (trackerType === 'kokocon') {
                 // Kokocon - plain table, group by title
                 const rows = document.querySelectorAll('table tr');
                 console.log(`[Found] ${rows.length} rows (Kokocon)`);
@@ -587,7 +1111,7 @@
                     }
                 });
 
-            } else if (isIPTorrents) {
+            } else if (trackerType === 'iptorrents') {
                 // IPTorrents - table#torrents has the search results, skip top_torrents sections
                 const rows = document.querySelectorAll('table#torrents tr');
                 console.log(`[Found] ${rows.length} rows (IPTorrents)`);
@@ -595,7 +1119,7 @@
                 const allTorrents = [];
 
                 rows.forEach(tr => {
-                    const downloadLink = tr.querySelector('a[href*="/download.php/"]');
+                    const downloadLink = tr.querySelector('a[href*="download.php"]');
                     const nameLink = tr.querySelector('a.hv');
 
                     if (downloadLink && nameLink) {
@@ -645,6 +1169,12 @@
             }
         } // End of mode === 'smart' block
 
+        bestTorrents = normalizeTorrentJobs(bestTorrents);
+        Object.keys(qualityCounts).forEach(key => delete qualityCounts[key]);
+        bestTorrents.forEach(torrent => {
+            qualityCounts[torrent.label] = (qualityCounts[torrent.label] || 0) + 1;
+        });
+
         if (!bestTorrents.length) {
             alert('❌ No torrents found to download');
             return;
@@ -661,62 +1191,62 @@
 
         if (!confirm(msg)) return;
 
-        console.log('[Download] Starting with infinite retry...');
-        btn.textContent = '⏳ Downloading...';
-        btn.disabled = true;
+        console.log('[Download] Fetching and validating torrent files...');
+        btn.textContent = '⏳ Starting...';
+        btn.disabled = false;
+        const controller = new AbortController();
+        activeDownloadController = controller;
 
-        let completed = 0;
-        let succeeded = 0;
-
-        // Function to download torrent with infinite retry
-        const downloadWithRetry = (torrent, index, attempt = 1) => {
-            try {
-                console.log(`[${index + 1}/${bestTorrents.length}] Attempt ${attempt}: ${torrent.label}`);
-                window.open(torrent.link.href, '_blank');
-                succeeded++;
-                console.log(`  ✓ Success after ${attempt} attempt(s): ${torrent.label}`);
-                checkCompletion();
-            } catch (error) {
-                console.error(`  ✗ Error: ${torrent.label}`, error);
-
-                // Calculate retry delay with exponential backoff, capped at MAX_RETRY_DELAY
-                const retryDelay = Math.min(
-                    RETRY_DELAY_BASE * Math.pow(2, attempt - 1),
-                    MAX_RETRY_DELAY
-                );
-
-                console.log(`  ↻ Retry #${attempt + 1} in ${retryDelay / 1000}s...`);
-
-                // Infinite retry - no max attempts check
-                setTimeout(() => {
-                    downloadWithRetry(torrent, index, attempt + 1);
-                }, retryDelay);
+        let result;
+        try {
+            result = await runDownloadQueue(
+                bestTorrents,
+                controller,
+                (phase, index, total, torrent, attempt, delay) => {
+                    if (phase === 'retry') {
+                        btn.textContent = '⏳ Retry ' + attempt + '/' + MAX_ATTEMPTS +
+                            ' (' + (index + 1) + '/' + total + ')';
+                    } else {
+                        btn.textContent = '⏳ ' + (index + 1) + '/' + total + ' · ' + torrent.label;
+                    }
+                }
+            );
+        } catch (error) {
+            result = {
+                handedToBrowser: 0,
+                failed: bestTorrents.length,
+                cancelled: error && error.name === 'AbortError'
+            };
+            console.error('[Download] Batch stopped unexpectedly:', error);
+        } finally {
+            if (activeDownloadController === controller) {
+                activeDownloadController = null;
             }
-        };
+        }
 
-        const checkCompletion = () => {
-            completed++;
-            const progress = Math.round((completed / bestTorrents.length) * 100);
-            btn.textContent = `⏳ ${progress}% (${completed}/${bestTorrents.length})`;
-
-            if (completed === bestTorrents.length) {
-                setTimeout(() => {
-                    btn.textContent = '✅ All Done!';
-                    console.log(`[Done] ${succeeded} torrents downloaded successfully`);
-
-                    setTimeout(() => {
-                        btn.textContent = '🎯 Best Quality';
-                        btn.disabled = false;
-                    }, 3000);
-                }, 500);
+        if (result.cancelled) {
+            btn.textContent = '⏹ Stopped (' + result.handedToBrowser + ' ready)';
+        } else if (result.failed) {
+            btn.textContent = '⚠ ' + result.handedToBrowser + ' ready · ' + result.failed + ' failed';
+        } else {
+            btn.textContent = '✅ ' + result.handedToBrowser + ' validated';
+        }
+        console.log(
+            '[Done] ' + result.handedToBrowser +
+            ' torrent(s) validated and handed to the browser; ' +
+            result.failed + ' failed' + (result.cancelled ? ', cancelled' : '')
+        );
+        setTimeout(() => {
+            if (!activeDownloadController) {
+                btn.textContent = '🎯 Best Quality';
+                btn.disabled = false;
             }
-        };
-
-        // Start downloading with delays
-        bestTorrents.forEach((t, i) => {
-            setTimeout(() => {
-                downloadWithRetry(t, i);
-            }, i * DELAY);
-        });
+        }, 5000);
     };
+
+    window.addEventListener('pagehide', () => {
+        if (activeDownloadController) {
+            activeDownloadController.abort();
+        }
+    }, { once: true });
 })();
