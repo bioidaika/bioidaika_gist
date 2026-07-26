@@ -1,10 +1,10 @@
 // ==UserScript==
-// @name         Universal Tracker - Reliable Smart Torrent Download v4.0
+// @name         Universal Tracker - Reliable Smart Torrent Download v4.1
 // @namespace    https://github.com/bioidaika/bioidaika_gist
-// @version      4.0.0
+// @version      4.1.0
 // @updateURL    https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/batch-download-torrents.user.js
 // @downloadURL  https://raw.githubusercontent.com/bioidaika/bioidaika_gist/master/tampermonkey-userscript/batch-download-torrents.user.js
-// @description  Download validated torrent files from UNIT3D, NexusPHP, Kokocon and IPTorrents with bounded retry and cancellation
+// @description  Download validated torrent files from modern/legacy UNIT3D, NexusPHP, Kokocon and IPTorrents with bounded retry and cancellation
 // @match        https://*/torrents*
 // @match        https://tracker.kokocon.net/index.php*
 // @match        https://www.iptorrents.com/t*
@@ -191,24 +191,200 @@
         return Array.from(groups.values());
     }
 
-    function findFlatNameLink(downloadLink) {
-        let node = downloadLink.closest('tr');
-        if (node) {
-            const rowLink = node.querySelector('a[href*="/torrents/"]:not([href*="/download/"])');
-            if (rowLink) {
-                return rowLink;
+    const UNIT3D_DOWNLOAD_SELECTOR = [
+        'a.torrent-search-row__action--download[href]',
+        'a.similar-torrent-row__action--download[href]',
+        'a.torrent-search--list__file[href]',
+        '.torrent-search--grouped__download a[href]',
+        'td.torrent-listings-download a[href]',
+        'a[href*="/torrents/download/"]',
+        'a[href*="/torrents/download_check/"]',
+        'a[href*="/download/"]',
+        'a[href*="/download_check/"]'
+    ].join(', ');
+
+    function unit3dDownloadInfo(downloadLink) {
+        const rawHref = downloadLink && (
+            downloadLink.getAttribute('href') ||
+            downloadLink.href
+        );
+        let url;
+        try {
+            url = new URL(rawHref, location.href);
+        } catch (error) {
+            return null;
+        }
+
+        if (
+            url.protocol !== 'https:' ||
+            url.origin !== location.origin ||
+            url.username ||
+            url.password
+        ) {
+            return null;
+        }
+
+        const match = url.pathname.match(
+            /^\/(?:torrents\/)?(download|download_check)\/(\d+)\/?$/i
+        );
+        if (!match) {
+            return null;
+        }
+
+        const sourceType = match[1].toLowerCase();
+        if (sourceType === 'download_check') {
+            url.pathname = url.pathname.replace(/\/download_check\//i, '/download/');
+        }
+        url.hash = '';
+
+        return {
+            id: match[2],
+            sourceType: sourceType,
+            url: url
+        };
+    }
+
+    function unit3dDetailId(link) {
+        let url;
+        try {
+            url = new URL(link.getAttribute('href') || link.href, location.href);
+        } catch (error) {
+            return '';
+        }
+        if (url.protocol !== 'https:' || url.origin !== location.origin) {
+            return '';
+        }
+        const match = url.pathname.match(/^\/torrents\/(\d+)(?:\.[^/]+)?\/?$/i);
+        return match ? match[1] : '';
+    }
+
+    function findUnit3dNameLink(downloadLink) {
+        const download = unit3dDownloadInfo(downloadLink);
+        if (!download) {
+            return null;
+        }
+
+        const row = downloadLink.closest([
+            'article.torrent-search-row',
+            'article.similar-torrent-row',
+            'article.torrent-card',
+            'tr[data-torrent-id]',
+            'tr',
+            '[data-torrent-id]'
+        ].join(', '));
+        if (!row) {
+            return null;
+        }
+
+        const semanticSelectors = [
+            '.torrent-search-row__name a[href]',
+            '.similar-torrent-row__name a[href]',
+            'a.torrent-search--list__name[href]',
+            '.torrent-search--grouped__name a[href]',
+            'a.torrent-card__link[href]',
+            'a.view-torrent.torrent-listings-name[href]'
+        ];
+
+        for (const selector of semanticSelectors) {
+            const candidates = Array.from(row.querySelectorAll(selector));
+            const exact = candidates.find(link => unit3dDetailId(link) === download.id);
+            if (exact) {
+                return exact;
             }
         }
 
-        node = downloadLink.parentElement;
-        for (let depth = 0; node && node !== document.body && depth < 8; depth++) {
-            const links = node.querySelectorAll('a[href*="/torrents/"]:not([href*="/download/"])');
-            if (links.length === 1) {
-                return links[0];
+        return Array.from(row.querySelectorAll('a[href]'))
+            .filter(link => unit3dDetailId(link) === download.id)
+            .sort((left, right) => (
+                normalizeTorrentText(right.textContent).length -
+                normalizeTorrentText(left.textContent).length
+            ))[0] || null;
+    }
+
+    function hasUnit3dDownloadLinks(root) {
+        return Array.from(root.querySelectorAll(UNIT3D_DOWNLOAD_SELECTOR))
+            .some(link => unit3dDownloadInfo(link) !== null);
+    }
+
+    function collectUnit3dTorrents(root) {
+        const torrents = [];
+        const seenIds = new Set();
+
+        root.querySelectorAll(UNIT3D_DOWNLOAD_SELECTOR).forEach(downloadLink => {
+            const download = unit3dDownloadInfo(downloadLink);
+            if (!download || seenIds.has(download.id)) {
+                return;
             }
-            node = node.parentElement;
+
+            const nameLink = findUnit3dNameLink(downloadLink);
+            const row = downloadLink.closest(
+                'article.torrent-search-row, article.similar-torrent-row, article.torrent-card, ' +
+                'tr, [data-torrent-id]'
+            );
+            const name =
+                normalizeTorrentText(nameLink && nameLink.textContent) ||
+                normalizeTorrentText(row && row.getAttribute('data-torrent-name')) ||
+                'Torrent ' + download.id;
+
+            torrents.push({
+                link: downloadLink,
+                url: download.url.href,
+                torrentId: download.id,
+                name: name,
+                score: getQualityScore(name),
+                label: getLabel(name)
+            });
+            seenIds.add(download.id);
+        });
+
+        return torrents;
+    }
+
+    function getUnit3dGroupRoots() {
+        const modernLists = Array.from(
+            document.querySelectorAll(
+                '.torrent-search--grouped__results .similar-torrents-list, ' +
+                '.torrent-search--grouped__result .similar-torrents-list, ' +
+                '.torrent-search--grouped__dropdown > .similar-torrents-list'
+            )
+        ).filter(list => hasUnit3dDownloadLinks(list));
+        if (modernLists.length) {
+            return modernLists;
         }
-        return null;
+
+        const legacyTables = Array.from(
+            document.querySelectorAll('table.torrent-search--grouped__torrents')
+        ).filter(table => hasUnit3dDownloadLinks(table));
+        if (legacyTables.length) {
+            return legacyTables;
+        }
+
+        return Array.from(
+            document.querySelectorAll('article.torrent-search--grouped__result')
+        ).filter(card => hasUnit3dDownloadLinks(card));
+    }
+
+    function collectUnit3dGroups(groupRoots) {
+        return groupRoots
+            .map(root => collectUnit3dTorrents(root))
+            .filter(group => group.length);
+    }
+
+    function getUnit3dFlatRoot() {
+        const selectors = [
+            '.torrent-results__list',
+            '.torrent-search--list__results',
+            '.torrent-search--card__results',
+            '.torrent-listings-overview',
+            '.torrent-search__component'
+        ];
+        for (const selector of selectors) {
+            const root = document.querySelector(selector);
+            if (root && hasUnit3dDownloadLinks(root)) {
+                return root;
+            }
+        }
+        return document;
     }
 
     function normalizeTorrentJobs(torrents) {
@@ -216,7 +392,10 @@
         const jobs = [];
 
         torrents.forEach(function (torrent) {
-            const rawHref = torrent.link && (torrent.link.getAttribute('href') || torrent.link.href);
+            const rawHref = torrent.url || (
+                torrent.link &&
+                (torrent.link.getAttribute('href') || torrent.link.href)
+            );
             let url;
             try {
                 url = new URL(rawHref, location.href);
@@ -224,8 +403,14 @@
                 return;
             }
 
+            const unit3dCheckPath = url.pathname.match(
+                /^\/(?:torrents\/)?download_check\/(\d+)\/?$/i
+            );
+            if (unit3dCheckPath) {
+                url.pathname = url.pathname.replace(/\/download_check\//i, '/download/');
+            }
             const allowedPath =
-                url.pathname.includes('/torrents/download/') ||
+                /^\/(?:torrents\/)?download\/\d+\/?$/i.test(url.pathname) ||
                 /\/download\.php(?:\/|$)/i.test(url.pathname);
             if (
                 url.protocol !== 'https:' ||
@@ -258,8 +443,12 @@
         initialHostname === 'iptorrents.com' ||
         initialHostname.endsWith('.iptorrents.com');
     const hasTrackerMarkup = Boolean(document.querySelector(
+        '.torrent-search__component, .page__torrents, .torrent-results, ' +
+        'article.torrent-search--grouped__result, article.torrent-search-row, ' +
+        'article.similar-torrent-row, article.torrent-card, ' +
         'table.torrent-search--grouped__torrents, table.torrent, table.torrents, #torrenttable, ' +
-        'a[href*="/torrents/download/"], a[href*="download.php"]'
+        'a[href*="/torrents/download/"], a[href*="/torrents/download_check/"], ' +
+        'a[href*="download.php"]'
     ));
     // Avoid injecting a control on an unrelated page that merely happens to match /torrents.
     if (!knownTrackerHost && !hasTrackerMarkup) {
@@ -717,9 +906,12 @@
         console.log(`[Start] Mode: ${mode}, Scanning for torrents...`);
 
         // Detect tracker type
-        const isUNIT3DGrouped = document.querySelectorAll('table.torrent-search--grouped__torrents').length > 0;
-        // UNIT3D flat: has /torrents/download/ links but no grouped table (e.g. lst.gg)
-        const isUNIT3DFlat = !isUNIT3DGrouped && document.querySelectorAll('a[href*="/torrents/download/"]').length > 0;
+        const unit3dGroupRoots = getUnit3dGroupRoots();
+        const isUNIT3DGrouped = unit3dGroupRoots.length > 0;
+        const unit3dFlatRoot = getUnit3dFlatRoot();
+        const isUNIT3DFlat =
+            !isUNIT3DGrouped &&
+            hasUnit3dDownloadLinks(unit3dFlatRoot);
         const isUNIT3D = isUNIT3DGrouped || isUNIT3DFlat;
         const isNexusPHP = !isUNIT3D &&
             document.querySelector('table.torrent, table.torrents, #torrenttable') !== null;
@@ -745,52 +937,20 @@
 
             if (trackerType === 'unit3d') {
                 if (isUNIT3DGrouped) {
-                    // UNIT3D Grouped view
-                    const tables = document.querySelectorAll('table.torrent-search--grouped__torrents');
-                    console.log(`[Found] ${tables.length} torrent groups (UNIT3D Grouped)`);
+                    const groups = collectUnit3dGroups(unit3dGroupRoots);
+                    console.log(`[Found] ${groups.length} torrent groups (UNIT3D Grouped)`);
 
-                    tables.forEach((table) => {
-                        const rows = table.querySelectorAll('tr');
-                        rows.forEach(tr => {
-                            const downloadLink = tr.querySelector('a[href*="/torrents/download/"]');
-                            const nameLink = tr.querySelector('a[href*="/torrents/"]:not([href*="/download/"])');
-
-                            if (downloadLink && nameLink) {
-                                const name = nameLink.textContent.trim();
-                                const label = getLabel(name);
-
-                                bestTorrents.push({
-                                    link: downloadLink,
-                                    name: name,
-                                    score: 0,
-                                    label: label
-                                });
-                                qualityCounts[label] = (qualityCounts[label] || 0) + 1;
-                            }
-                        });
+                    groups.flat().forEach(torrent => {
+                        bestTorrents.push(torrent);
+                        qualityCounts[torrent.label] = (qualityCounts[torrent.label] || 0) + 1;
                     });
                 } else {
-                    // UNIT3D Flat view (e.g. lst.gg)
-                    const downloadLinks = document.querySelectorAll('a[href*="/torrents/download/"]');
-                    console.log(`[Found] ${downloadLinks.length} download links (UNIT3D Flat)`);
+                    const torrents = collectUnit3dTorrents(unit3dFlatRoot);
+                    console.log(`[Found] ${torrents.length} torrents (UNIT3D Flat)`);
 
-                    downloadLinks.forEach(downloadLink => {
-                        // Walk up to find the closest row/container, then find the torrent name link
-                        const nameLink = findFlatNameLink(downloadLink);
-
-                        if (nameLink) {
-                            const name = nameLink.textContent.trim();
-                            if (name.length < 3) return;
-                            const label = getLabel(name);
-
-                            bestTorrents.push({
-                                link: downloadLink,
-                                name: name,
-                                score: 0,
-                                label: label
-                            });
-                            qualityCounts[label] = (qualityCounts[label] || 0) + 1;
-                        }
+                    torrents.forEach(torrent => {
+                        bestTorrents.push(torrent);
+                        qualityCounts[torrent.label] = (qualityCounts[torrent.label] || 0) + 1;
                     });
                 }
             } else if (trackerType === 'nexusphp') {
@@ -885,42 +1045,23 @@
             console.log('[Mode] Smart Filter - Selecting best quality...');
 
             if (trackerType === 'unit3d') {
+                let groups;
                 if (isUNIT3DGrouped) {
-                    // UNIT3D - Grouped tables
-                    const tables = document.querySelectorAll('table.torrent-search--grouped__torrents');
-                    console.log(`[Found] ${tables.length} torrent groups (UNIT3D Grouped)`);
+                    groups = collectUnit3dGroups(unit3dGroupRoots);
+                    console.log(`[Found] ${groups.length} torrent groups (UNIT3D Grouped)`);
 
-                    if (!tables.length) {
-                        alert('❌ Not in group view or no torrents found');
-                        return;
-                    }
-
-                    tables.forEach((table, idx) => {
-                        const rows = table.querySelectorAll('tr');
+                    groups.forEach((group, idx) => {
                         let best = null;
                         let bestScore = -1;
 
-                        console.log(`[Group ${idx + 1}] Processing ${rows.length} torrents`);
+                        console.log(`[Group ${idx + 1}] Processing ${group.length} torrents`);
 
-                        rows.forEach(tr => {
-                            const downloadLink = tr.querySelector('a[href*="/torrents/download/"]');
-                            const nameLink = tr.querySelector('a[href*="/torrents/"]:not([href*="/download/"])');
+                        group.forEach(torrent => {
+                            console.log(`  - ${torrent.name.substring(0, 60)}... (Score: ${torrent.score})`);
 
-                            if (downloadLink && nameLink) {
-                                const name = nameLink.textContent.trim();
-                                const score = getQualityScore(name);
-
-                                console.log(`  - ${name.substring(0, 60)}... (Score: ${score})`);
-
-                                if (score > bestScore) {
-                                    bestScore = score;
-                                    best = {
-                                        link: downloadLink,
-                                        name: name,
-                                        score: score,
-                                        label: getLabel(name)
-                                    };
-                                }
+                            if (torrent.score > bestScore) {
+                                bestScore = torrent.score;
+                                best = torrent;
                             }
                         });
 
@@ -931,32 +1072,10 @@
                         }
                     });
                 } else {
-                    // UNIT3D - Flat list (e.g. lst.gg)
-                    const downloadLinks = document.querySelectorAll('a[href*="/torrents/download/"]');
-                    console.log(`[Found] ${downloadLinks.length} download links (UNIT3D Flat)`);
-
-                    const allTorrents = [];
-
-                    downloadLinks.forEach(downloadLink => {
-                        const nameLink = findFlatNameLink(downloadLink);
-
-                        if (nameLink) {
-                            const name = nameLink.textContent.trim();
-                            if (name.length < 3) return;
-                            const score = getQualityScore(name);
-
-                            allTorrents.push({
-                                link: downloadLink,
-                                name: name,
-                                score: score,
-                                label: getLabel(name)
-                            });
-                        }
-                    });
-
+                    const allTorrents = collectUnit3dTorrents(unit3dFlatRoot);
                     console.log(`[Collected] ${allTorrents.length} torrents (UNIT3D Flat)`);
 
-                    const groups = groupTorrentsByTitle(allTorrents);
+                    groups = groupTorrentsByTitle(allTorrents);
                     console.log(`[Grouped] ${groups.length} unique titles`);
 
                     groups.forEach((group, idx) => {
